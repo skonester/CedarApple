@@ -11,6 +11,8 @@ This project is dual-licensed under both the MIT License and the GNU General Pub
 
 ### MIT License
 
+Copyright (c) 2026 tfo-dot
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
@@ -34,7 +36,7 @@ SOFTWARE.
 GNU GENERAL PUBLIC LICENSE
 Version 3, 29 June 2007
 
-Copyright (C) 2007, 2026 tfo-dot
+Copyright (C) 2007, 2026 skonester
 
 Everyone is permitted to copy and distribute verbatim copies
 of this license document, but changing it is not allowed.
