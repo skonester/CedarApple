@@ -1,0 +1,32 @@
+"Parts Bytes Module"
+
+return |>
+    new: __bytes_new,
+    from_string: __bytes_from_string,
+    from_array: __bytes_from_array,
+    from_hex: __bytes_from_hex,
+    len: __bytes_len,
+    get: __bytes_get,
+    set: __bytes_set,
+    push: __bytes_push,
+    extend: __bytes_extend,
+    slice: __bytes_slice,
+    resize: __bytes_resize,
+    fill: __bytes_fill,
+    to_string: __bytes_to_string,
+    to_hex: __bytes_to_hex,
+    get_u8: __bytes_get_u8,
+    set_u8: __bytes_set_u8,
+    get_u16_be: __bytes_get_u16_be,
+    get_u16_le: __bytes_get_u16_le,
+    set_u16_be: __bytes_set_u16_be,
+    set_u16_le: __bytes_set_u16_le,
+    get_u32_be: __bytes_get_u32_be,
+    get_u32_le: __bytes_get_u32_le,
+    set_u32_be: __bytes_set_u32_be,
+    set_u32_le: __bytes_set_u32_le,
+    get_u64_be: __bytes_get_u64_be,
+    get_u64_le: __bytes_get_u64_le,
+    set_u64_be: __bytes_set_u64_be,
+    set_u64_le: __bytes_set_u64_le
+<|;

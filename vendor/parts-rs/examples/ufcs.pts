@@ -1,0 +1,35 @@
+`UFCS allows calling any function as if it were a method on its first argument.
+obj.func(args) is equivalent to func(obj, args).`
+
+"1. Basic UFCS"
+let increment(n) = n + 1;
+
+let x = 10;
+let x_plus_one = x.increment();
+println("10.increment() = ", x_plus_one);
+
+"2. Chaining"
+let double(n) = n * 2;
+
+let result = x.increment().double();
+println("10.increment().double() = ", result);
+
+"3. Multiple Arguments"
+let add_three(a, b, c) = {
+    return a + b + c;
+}
+
+"x.add_three(20, 30) is equivalent to add_three(x, 20, 30)"
+let sum = x.add_three(20, 30);
+println("10.add_three(20, 30) = ", sum);
+
+"4. Standard property access still works"
+let person = |> name: "Alice", age: 30 <|;
+println("Person name: ", person.name);
+
+let greet(p) = {
+    println("Hello, ", p.name, "!");
+}
+
+"person.greet() is equivalent to greet(person)"
+person.greet();

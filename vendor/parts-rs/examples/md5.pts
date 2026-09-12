@@ -1,0 +1,294 @@
+let std = import `@std/std.pts`;
+
+let math = std.math;
+let str = std.str;
+
+let converse = |>
+	"0": 0,
+	"1": 1,
+	"2": 2,
+	"3": 3,
+	"4": 4,
+	"5": 5,
+	"6": 6,
+	"7": 7,
+	"8": 8,
+	"9": 9,
+	"A": 10,
+	"B": 11,
+	"C": 12,
+	"D": 13,
+	"E": 14,
+	"F": 15
+<|
+
+let __decimal_value = 0;
+
+part hex {
+	(@name, @val) => {
+		__decimal_value = 0;
+
+		let __stripped = @val.strip_prefix("0x").unwrap_or(@val);
+		
+		let __i = 0;
+		let __uppercase = str.upper(__stripped);
+		for __char in __uppercase {
+			__decimal_value = (__decimal_value * 16) + converse[__char];
+			__i = __i + 1;
+		}
+
+		let @name = __decimal_value;
+	}
+}
+
+hex! {a_z, "0x67452301" }
+hex! {b_z, "0xefcdab89" }
+hex! {c_z, "0x98badcfe" }
+hex! {d_z, "0x10325476" }
+
+K = |>
+	0: 3614090360,
+	1: 3905402710,
+	2: 606105819,
+	3: 3250441966,
+	4: 4118548399,
+	5: 1200080426,
+	6: 2821735955,
+	7: 4249261313,
+	8: 1770035416,
+	9: 2336552879,
+	10: 4294925233,
+	11: 2304563134,
+	12: 1804603682,
+	13: 4254626195,
+	14: 2792965006,
+	15: 1236535329,
+	16: 4129170786,
+	17: 3225465664,
+	18: 643717713,
+	19: 3921069994,
+	20: 3593408605,
+	21: 38016083,
+	22: 3634488961,
+	23: 3889429448,
+	24: 568446438,
+	25: 3275163606,
+	26: 4107603335,
+	27: 1163531501,
+	28: 2850285829,
+	29: 4243563512,
+	30: 1735328473,
+	31: 2368359562,
+	32: 4294588738,
+	33: 2272392833,
+	34: 1839030562,
+	35: 4259657740,
+	36: 2763975236,
+	37: 1272893353,
+	38: 4139469664,
+	39: 3200236656,
+	40: 681279174,
+	41: 3936430074,
+	42: 3572445317,
+	43: 76029189,
+	44: 3654602809,
+	45: 3873151461,
+	46: 530742520,
+	47: 3299628645,
+	48: 4096336452,
+	49: 1126891415,
+	50: 2878612391,
+	51: 4237533241,
+	52: 1700485571,
+	53: 2399980690,
+	54: 4293915773,
+	55: 2240044497,
+	56: 1873313359,
+	57: 4264355552,
+	58: 2734768916,
+	59: 1309151649,
+	60: 4149444226,
+	61: 3174756917,
+	62: 718787259,
+	63: 3951481745
+<|
+
+let MAXU = 4294967295;
+
+let f(b, c, d) = (b & c) | ((b ^ MAXU) & d);
+let g(b, c, d) = (b & d) | ((d ^ MAXU) & c);
+let h(b, c, d) = (b ^ c) ^ d
+let i(b, c, d) = c ^ (b | (d ^ MAXU))
+
+let input = "I love hashing the values";
+
+let len_bytes = input.len();
+let len_bits = len_bytes * 8;
+
+let idx = 0;
+let padded_bytes = |><|;
+
+for idx < len_bytes {
+	padded_bytes[idx] = str.byte_at(input, idx).unwrap_or(0);
+	idx = idx + 1;
+}
+
+padded_bytes[idx] = 128;
+idx = idx + 1;
+
+for ((idx % 64) == 56) == false {
+	padded_bytes[idx] = 0;
+	idx = idx + 1;
+}
+
+let len_i = 0;
+let temp_len = len_bits;
+for len_i < 8 {
+	let lowest_byte = temp_len & 255;
+	padded_bytes[idx] = lowest_byte;
+
+	temp_len = temp_len >> 8;
+
+	idx = idx + 1;
+	len_i = len_i + 1;
+}
+
+let A = a_z;
+let B = b_z;
+let C = c_z;
+let D = d_z;
+
+let total_padded_bytes = idx;
+let block_start = 0;
+
+for block_start < total_padded_bytes {
+    let M = |><|;
+    let m_idx = 0;
+    let byte_idx = block_start;
+
+	for m_idx < 16 {
+		let b__z = padded_bytes[byte_idx]
+		let b__o = padded_bytes[byte_idx+1]
+		let b__t = padded_bytes[byte_idx+2]
+		let b__tt = padded_bytes[byte_idx+3]
+
+		let s_o = b__o << 8;
+		let s_t = b__t << 16;
+		let s_tt = b__tt << 24;
+
+		let word = b__z | (s_o | (s_t | s_tt));
+		M[m_idx] = word;
+		byte_idx = byte_idx + 4;
+		m_idx = m_idx + 1;
+	}
+
+    let AA = A;
+    let BB = B;
+    let CC = C;
+    let DD = D;
+
+    let a = A;
+	let b = B;
+	let c = C;
+	let d = D;
+
+	let step = 0;
+
+	for step < 64 {
+	    let f_res = 0;
+	    let m_idx = 0;
+	    let shift_amt = 0;
+	    
+	    let rem = step % 4;
+
+	    if step < 16 {
+	        f_res = f(b, c, d);
+	        m_idx = step;
+	        if rem == 0 { shift_amt = 7; }
+	        if rem == 1 { shift_amt = 12; }
+	        if rem == 2 { shift_amt = 17; }
+	        if rem == 3 { shift_amt = 22; }
+	    }
+	    
+	    if step >= 16 {
+	        if step < 32 {
+	            f_res = g(b, c, d);
+	            m_idx = ((5 * step) + 1) % 16;
+	            if rem == 0 { shift_amt = 5; }
+	            if rem == 1 { shift_amt = 9; }
+	            if rem == 2 { shift_amt = 14; }
+	            if rem == 3 { shift_amt = 20; }
+	        }
+	    }
+	    
+	    if step >= 32 {
+	        if step < 48 {
+	            f_res = h(b, c, d);
+	            m_idx = ((3 * step) + 5) % 16;
+	            if rem == 0 { shift_amt = 4; }
+	            if rem == 1 { shift_amt = 11; }
+	            if rem == 2 { shift_amt = 16; }
+	            if rem == 3 { shift_amt = 23; }
+	        }
+	    }
+	    
+	    if step >= 48 {
+	        f_res = i(b, c, d);
+	        m_idx = (7 * step) % 16;
+	        if rem == 0 { shift_amt = 6; }
+	        if rem == 1 { shift_amt = 10; }
+	        if rem == 2 { shift_amt = 15; }
+	        if rem == 3 { shift_amt = 21; }
+	    }
+
+	    let sum = (a + f_res + M[m_idx] + K[step]) & MAXU;
+
+	    let rotated = std.rotate_left(sum, shift_amt, 2);
+	    
+	    let temp = d;
+	    d = c;
+	    c = b;
+	    b = (b + rotated) & MAXU;
+	    a = temp;
+
+	    step = step + 1;
+	}
+
+	A = (AA + a) & MAXU;
+	B = (BB + b) & MAXU;
+	C = (CC + c) & MAXU;
+	D = (DD + d) & MAXU;
+
+    block_start = block_start + 64;
+}
+
+let to_hex = |>
+    0: "0", 1: "1", 2: "2", 3: "3",
+    4: "4", 5: "5", 6: "6", 7: "7",
+    8: "8", 9: "9", 10: "a", 11: "b",
+    12: "c", 13: "d", 14: "e", 15: "f"
+<|
+
+let format_word(word) {
+    let result = "";
+    let step = 0;
+    let temp_word = word;
+    
+    for step < 4 {
+        let current_byte = temp_word & 255;
+        
+        let high_nibble = current_byte >> 4;
+        let low_nibble = current_byte & 15;
+        
+        let char_o = to_hex[high_nibble];
+        let char_t = to_hex[low_nibble];
+        result = str.join(str.join(result, char_o), char_t);
+        
+        temp_word = temp_word >> 8;
+        step = step + 1;
+    }
+    
+    return result;
+}
+
+println(format_word(A), format_word(B), format_word(C), format_word(D));

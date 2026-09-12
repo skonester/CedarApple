@@ -1,0 +1,614 @@
+"RFC 6455 WebSocket Protocol Implementation in Parts"
+
+"--- Masking / Unmasking (RFC 6455 Section 5.3) ---"
+let apply_mask(payload, mask_key) {
+    let p_len = payload.len();
+    let masked_buf = __bytes_new(p_len).unwrap();
+    let i = 0;
+    for i < p_len {
+        let p_byte = payload[i];
+        let k_byte = mask_key[i % 4];
+        masked_buf[i] = p_byte ^ k_byte;
+        i = i + 1;
+    }
+    return masked_buf;
+}
+
+"--- Frame Construction Helpers ---"
+let create_frame(fin, opcode, payload, masked, mask_key) {
+    return |>
+        fin: fin,
+        opcode: opcode,
+        payload: payload,
+        masked: masked,
+        mask_key: mask_key
+    <|;
+}
+
+let text_frame(text, masked, mask_key) {
+    let payload = __bytes_from_string(text);
+    return |>
+        fin: true,
+        opcode: 1,
+        payload: payload,
+        masked: masked,
+        mask_key: mask_key
+    <|;
+}
+
+let binary_frame(payload, masked, mask_key) {
+    return |>
+        fin: true,
+        opcode: 2,
+        payload: payload,
+        masked: masked,
+        mask_key: mask_key
+    <|;
+}
+
+let ping_frame(data, masked, mask_key) {
+    return |>
+        fin: true,
+        opcode: 9,
+        payload: data,
+        masked: masked,
+        mask_key: mask_key
+    <|;
+}
+
+let pong_frame(data, masked, mask_key) {
+    return |>
+        fin: true,
+        opcode: 10,
+        payload: data,
+        masked: masked,
+        mask_key: mask_key
+    <|;
+}
+
+let close_frame(code, reason, masked, mask_key) {
+    let reason_bytes = __bytes_from_string(reason);
+    let reason_len = reason_bytes.len();
+    let payload = __bytes_new(2 + reason_len).unwrap();
+    payload.set_u16_be(0, code).unwrap();
+    let i = 0;
+    for i < reason_len {
+        payload[2 + i] = reason_bytes[i];
+        i = i + 1;
+    }
+    return |>
+        fin: true,
+        opcode: 8,
+        payload: payload,
+        masked: masked,
+        mask_key: mask_key
+    <|;
+}
+
+let parse_close_payload(payload) {
+    let p_len = payload.len();
+    if p_len < 2 {
+        return |>
+            code: 1005,
+            reason: ""
+        <|;
+    }
+    let code = payload.get_u16_be(0).unwrap();
+    let reason_bytes = payload.slice(2, p_len).unwrap();
+    let reason = reason_bytes.to_string().unwrap_or("");
+    return |>
+        code: code,
+        reason: reason
+    <|;
+}
+
+"--- Frame Encoding (RFC 6455 Section 5.2) ---"
+let encode_frame(frame) {
+    let fin = frame.fin;
+    let opcode = frame.opcode;
+    let payload = frame.payload;
+    let masked = frame.masked;
+    let mask_key = frame.mask_key;
+
+    let payload_len = payload.len();
+
+    "Validate Control Frame constraints (RFC 6455 Section 5.5)"
+    if opcode >= 8 {
+        if (fin == false) {
+            return Result::Err("Control frames must not be fragmented");
+        }
+        if payload_len > 125 {
+            return Result::Err("Control frame payload cannot exceed 125 bytes");
+        }
+    }
+
+    "Calculate header size based on payload length and masking"
+    let header_size = 2;
+    if payload_len >= 126 {
+        if payload_len <= 65535 {
+            header_size = header_size + 2;
+        } else {
+            header_size = header_size + 8;
+        }
+    }
+    if masked {
+        header_size = header_size + 4;
+    }
+
+    let frame_buf = __bytes_new(header_size + payload_len).unwrap();
+
+    "Byte 0: FIN bit | RSV (0) | Opcode (4 bits)"
+    let fin_bit = 0;
+    if fin {
+        fin_bit = 128;
+    }
+    let b0 = fin_bit | (opcode & 15);
+    frame_buf[0] = b0;
+
+    "Byte 1 + extended length: MASK bit | payload length descriptor"
+    let mask_bit = 0;
+    if masked {
+        mask_bit = 128;
+    }
+    let cur_offset = 2;
+
+    if payload_len <= 125 {
+        frame_buf[1] = mask_bit | payload_len;
+    } else {
+        if payload_len <= 65535 {
+            frame_buf[1] = mask_bit | 126;
+            frame_buf.set_u16_be(2, payload_len).unwrap();
+            cur_offset = 4;
+        } else {
+            frame_buf[1] = mask_bit | 127;
+            frame_buf.set_u64_be(2, payload_len).unwrap();
+            cur_offset = 10;
+        }
+    }
+
+    "Masking key and payload"
+    if masked {
+        let k0 = mask_key[0];
+        let k1 = mask_key[1];
+        let k2 = mask_key[2];
+        let k3 = mask_key[3];
+        frame_buf[cur_offset] = k0;
+        frame_buf[cur_offset + 1] = k1;
+        frame_buf[cur_offset + 2] = k2;
+        frame_buf[cur_offset + 3] = k3;
+        cur_offset = cur_offset + 4;
+
+        let i = 0;
+        for i < payload_len {
+            let p_byte = payload[i];
+            let k_byte = mask_key[i % 4];
+            frame_buf[cur_offset + i] = p_byte ^ k_byte;
+            i = i + 1;
+        }
+    } else {
+        let i = 0;
+        for i < payload_len {
+            frame_buf[cur_offset + i] = payload[i];
+            i = i + 1;
+        }
+    }
+
+    return Result::Ok(frame_buf);
+}
+
+"--- Frame Decoding (RFC 6455 Section 5.2) ---"
+let decode_frame(raw_buf, offset) {
+    let total_len = raw_buf.len();
+    let available = total_len - offset;
+
+    if available < 2 {
+        return Result::Err("Incomplete frame header: need at least 2 bytes");
+    }
+
+    let b0 = raw_buf[offset];
+    let b1 = raw_buf[offset + 1];
+
+    let fin = (b0 & 128) == 128;
+    let rsv = (b0 & 112) >> 4;
+    if rsv > 0 {
+        return Result::Err("Protocol Error: RSV bits must be 0");
+    }
+
+    let opcode = b0 & 15;
+    let masked = (b1 & 128) == 128;
+    let len_indicator = b1 & 127;
+
+    let payload_len = 0;
+    let header_size = 2;
+
+    if len_indicator <= 125 {
+        payload_len = len_indicator;
+    } else {
+        if len_indicator == 126 {
+            if available < 4 {
+                return Result::Err("Incomplete frame: missing 16-bit extended length");
+            }
+            payload_len = raw_buf.get_u16_be(offset + 2).unwrap();
+            header_size = 4;
+        } else {
+            if len_indicator == 127 {
+                if available < 10 {
+                    return Result::Err("Incomplete frame: missing 64-bit extended length");
+                }
+                payload_len = raw_buf.get_u64_be(offset + 2).unwrap();
+                header_size = 10;
+            }
+        }
+    }
+
+    let mask_key_buf = __bytes_new(0).unwrap();
+    if masked {
+        if available < (header_size + 4) {
+            return Result::Err("Incomplete frame: missing 4-byte masking key");
+        }
+        let k = raw_buf.slice(offset + header_size, offset + header_size + 4).unwrap();
+        mask_key_buf = k;
+        header_size = header_size + 4;
+    }
+
+    let total_frame_size = header_size + payload_len;
+    if available < total_frame_size {
+        return Result::Err("Incomplete frame: payload data truncated");
+    }
+
+    "Validate Control Frame constraints (RFC 6455 Section 5.5)"
+    if opcode >= 8 {
+        if (fin == false) {
+            return Result::Err("Protocol Error: Control frames must not be fragmented");
+        }
+        if payload_len > 125 {
+            return Result::Err("Protocol Error: Control frame payload must be <= 125 bytes");
+        }
+    }
+
+    let raw_payload = raw_buf.slice(offset + header_size, offset + total_frame_size).unwrap();
+    let final_payload = raw_payload;
+    if masked {
+        let unmasked = __bytes_new(payload_len).unwrap();
+        let i = 0;
+        for i < payload_len {
+            let p_byte = raw_payload[i];
+            let k_byte = mask_key_buf[i % 4];
+            unmasked[i] = p_byte ^ k_byte;
+            i = i + 1;
+        }
+        final_payload = unmasked;
+    }
+
+    let frame = |>
+        fin: fin,
+        opcode: opcode,
+        payload: final_payload,
+        masked: masked,
+        mask_key: mask_key_buf
+    <|;
+
+    return Result::Ok(|>
+        frame: frame,
+        next_offset: offset + total_frame_size,
+        bytes_consumed: total_frame_size
+    <|);
+}
+
+"--- Handshake Implementation (RFC 6455 Section 4) ---"
+let create_client_handshake(host, path, key) {
+    return __joinStr(
+        __joinStr(
+            __joinStr(
+                __joinStr("GET ", path),
+                __joinStr(" HTTP/1.1\r\nHost: ", host)
+            ),
+            __joinStr("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ", key)
+        ),
+        "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+}
+
+let create_server_handshake(client_key) {
+    let accept_token = __sec_websocket_accept(client_key);
+    return __joinStr(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ",
+        __joinStr(accept_token, "\r\n\r\n")
+    );
+}
+
+let verify_server_handshake(response_str, client_key) {
+    let expected_accept = __sec_websocket_accept(client_key);
+    
+    "Check HTTP 101 Switching Protocols"
+    let prefix_match = __str_strip_prefix(response_str, "HTTP/1.1 101").is_some();
+    if (prefix_match == false) {
+        return Result::Err("Server handshake failed: expected HTTP 101 Switching Protocols");
+    }
+
+    "Verify Sec-WebSocket-Accept token is present"
+    let accept_prefix = __str_strip_prefix(expected_accept, expected_accept).is_some();
+    if (accept_prefix == false) {
+        return Result::Err("Server handshake failed: invalid Sec-WebSocket-Accept token");
+    }
+
+    return Result::Ok(true);
+}
+
+"--- Client Network Connection Methods ---"
+let connect_wss(host, path) {
+    let sock_res = __net_tls_connect(host, 443);
+    let sock_match = sock_res.is_ok();
+    if (sock_match == false) {
+        return Result::Err(sock_res.unwrap_err());
+    }
+    let sock = sock_res.unwrap();
+    let key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let req = __joinStr(
+        __joinStr(
+            __joinStr(
+                __joinStr("GET ", path),
+                __joinStr(" HTTP/1.1\r\nHost: ", host)
+            ),
+            __joinStr("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ", key)
+        ),
+        "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    let write_res = __net_write(sock, req);
+    if write_res.is_err() {
+        __net_close(sock);
+        return Result::Err(write_res.unwrap_err());
+    }
+    let read_res = __net_read(sock, 4096);
+    if read_res.is_err() {
+        __net_close(sock);
+        return Result::Err(read_res.unwrap_err());
+    }
+    let resp_bytes = read_res.unwrap();
+    let resp_str = resp_bytes.to_string().unwrap();
+    let expected_accept = __sec_websocket_accept(key);
+    let prefix_match = __str_strip_prefix(resp_str, "HTTP/1.1 101").is_some();
+    if (prefix_match == false) {
+        __net_close(sock);
+        return Result::Err("Server handshake failed: expected HTTP 101 Switching Protocols");
+    }
+
+    return Result::Ok(|>
+        socket: sock,
+        host: host,
+        path: path
+    <|);
+}
+
+let connect_ws(host, port, path) {
+    let port_str = ":80";
+    if port == 80 {
+        port_str = ":80";
+    } else {
+        if port == 8080 {
+            port_str = ":8080";
+        } else {
+            if port == 9001 {
+                port_str = ":9001";
+            } else {
+                port_str = __joinStr(":", port);
+            }
+        }
+    }
+    let addr = __joinStr(host, port_str);
+    let sock_res = __net_tcp_connect(addr);
+    if sock_res.is_err() {
+        return Result::Err(sock_res.unwrap_err());
+    }
+    let sock = sock_res.unwrap();
+    let key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let req = __joinStr(
+        __joinStr(
+            __joinStr(
+                __joinStr("GET ", path),
+                __joinStr(" HTTP/1.1\r\nHost: ", host)
+            ),
+            __joinStr("\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ", key)
+        ),
+        "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    let write_res = __net_write(sock, req);
+    if write_res.is_err() {
+        __net_close(sock);
+        return Result::Err(write_res.unwrap_err());
+    }
+    let read_res = __net_read(sock, 4096);
+    if read_res.is_err() {
+        __net_close(sock);
+        return Result::Err(read_res.unwrap_err());
+    }
+    let resp_bytes = read_res.unwrap();
+    let resp_str = resp_bytes.to_string().unwrap();
+    let prefix_match = __str_strip_prefix(resp_str, "HTTP/1.1 101").is_some();
+    if (prefix_match == false) {
+        __net_close(sock);
+        return Result::Err("Server handshake failed: expected HTTP 101 Switching Protocols");
+    }
+
+    return Result::Ok(|>
+        socket: sock,
+        host: host,
+        path: path
+    <|);
+}
+
+let client_send(client, frame) {
+    let payload_len = frame.payload.len();
+    let is_masked = frame.masked;
+    let header_size = 2;
+    if (payload_len > 125) {
+        if (payload_len <= 65535) {
+            header_size = 4;
+        } else {
+            header_size = 10;
+        }
+    }
+    if is_masked {
+        header_size = header_size + 4;
+    }
+
+    let frame_buf = __bytes_new(header_size + payload_len).unwrap();
+    let b0 = frame.opcode;
+    if frame.fin {
+        b0 = b0 | 128;
+    }
+    frame_buf[0] = b0;
+
+    let mask_bit = 0;
+    if is_masked {
+        mask_bit = 128;
+    }
+
+    let payload_offset = 2;
+    if (payload_len <= 125) {
+        frame_buf[1] = mask_bit | payload_len;
+    } else {
+        if (payload_len <= 65535) {
+            frame_buf[1] = mask_bit | 126;
+            frame_buf.set_u16_be(2, payload_len).unwrap();
+            payload_offset = 4;
+        } else {
+            frame_buf[1] = mask_bit | 127;
+            frame_buf.set_u64_be(2, payload_len).unwrap();
+            payload_offset = 10;
+        }
+    }
+
+    if is_masked {
+        let mask_k = frame.mask_key;
+        frame_buf[payload_offset] = mask_k[0];
+        frame_buf[payload_offset + 1] = mask_k[1];
+        frame_buf[payload_offset + 2] = mask_k[2];
+        frame_buf[payload_offset + 3] = mask_k[3];
+        payload_offset = payload_offset + 4;
+
+        let masked_payload = __bytes_new(payload_len).unwrap();
+        let i = 0;
+        for i < payload_len {
+            let k_byte = mask_k[i % 4];
+            masked_payload[i] = frame.payload[i] ^ k_byte;
+            i = i + 1;
+        }
+        let j = 0;
+        for j < payload_len {
+            frame_buf[payload_offset + j] = masked_payload[j];
+            j = j + 1;
+        }
+    } else {
+        let k = 0;
+        for k < payload_len {
+            frame_buf[payload_offset + k] = frame.payload[k];
+            k = k + 1;
+        }
+    }
+
+    return __net_write(client.socket, frame_buf);
+}
+
+let client_recv(client) {
+    let read_res = __net_read(client.socket, 4096);
+    if read_res.is_err() {
+        return Result::Err(read_res.unwrap_err());
+    }
+    let bytes = read_res.unwrap();
+    let total_len = bytes.len();
+    if (total_len < 2) {
+        return Result::Err("Frame too small: buffer < 2 bytes");
+    }
+    let b0 = bytes[0];
+    let fin = ((b0 & 128) == 128);
+    let opcode = b0 & 15;
+
+    let b1 = bytes[1];
+    let masked = ((b1 & 128) == 128);
+    let len_indicator = b1 & 127;
+
+    let payload_len = len_indicator;
+    let current_offset = 2;
+
+    if (len_indicator == 126) {
+        payload_len = bytes.get_u16_be(2).unwrap();
+        current_offset = 4;
+    }
+    if (len_indicator == 127) {
+        payload_len = bytes.get_u64_be(2).unwrap();
+        current_offset = 10;
+    }
+
+    let mask_key_buf = __bytes_new(0).unwrap();
+    if masked {
+        mask_key_buf = bytes.slice(current_offset, current_offset + 4).unwrap();
+        current_offset = current_offset + 4;
+    }
+
+    let raw_payload = bytes.slice(current_offset, current_offset + payload_len).unwrap();
+    let final_payload = raw_payload;
+    if masked {
+        let unmasked = __bytes_new(payload_len).unwrap();
+        let i = 0;
+        for i < payload_len {
+            let k_byte = mask_key_buf[i % 4];
+            unmasked[i] = raw_payload[i] ^ k_byte;
+            i = i + 1;
+        }
+        final_payload = unmasked;
+    }
+
+    let ret_frame = |>
+        fin: fin,
+        opcode: opcode,
+        payload: final_payload,
+        masked: masked,
+        mask_key: mask_key_buf
+    <|;
+
+    return Result::Ok(|>
+        frame: ret_frame,
+        next_offset: current_offset + payload_len,
+        bytes_consumed: current_offset + payload_len
+    <|);
+}
+let client_close(client) {
+    return __net_close(client.socket);
+}
+
+"--- Module Export ---"
+return |>
+    OP_CONTINUATION: 0,
+    OP_TEXT: 1,
+    OP_BINARY: 2,
+    OP_CLOSE: 8,
+    OP_PING: 9,
+    OP_PONG: 10,
+    CLOSE_NORMAL: 1000,
+    CLOSE_GOING_AWAY: 1001,
+    CLOSE_PROTOCOL_ERROR: 1002,
+    CLOSE_UNSUPPORTED: 1003,
+    CLOSE_INVALID_PAYLOAD: 1007,
+    CLOSE_POLICY_VIOLATION: 1008,
+    CLOSE_TOO_BIG: 1009,
+    CLOSE_INTERNAL_ERROR: 1011,
+    apply_mask: apply_mask,
+    create_frame: create_frame,
+    text_frame: text_frame,
+    binary_frame: binary_frame,
+    ping_frame: ping_frame,
+    pong_frame: pong_frame,
+    close_frame: close_frame,
+    parse_close_payload: parse_close_payload,
+    encode_frame: encode_frame,
+    decode_frame: decode_frame,
+    create_client_handshake: create_client_handshake,
+    create_server_handshake: create_server_handshake,
+    verify_server_handshake: verify_server_handshake,
+    connect_wss: connect_wss,
+    connect_ws: connect_ws,
+    client_send: client_send,
+    client_recv: client_recv,
+    client_close: client_close
+<|;

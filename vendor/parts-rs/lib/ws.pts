@@ -1,0 +1,2 @@
+"WebSocket Module Export"
+return import `./std/ws.pts`;

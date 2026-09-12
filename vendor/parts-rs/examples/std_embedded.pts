@@ -1,0 +1,23 @@
+let std = import `@std/std.pts`;
+
+println("--- Math Module ---");
+let math = std.math;
+println("PI: ", math.PI);
+println("sin(PI/2): ", math.sin(math.PI / 2));
+println("Random: ", math.rand());
+
+println("\n--- Sys Module ---");
+let sys = std.sys;
+println("Current Time: ", sys.time());
+println("User: ", sys.env("USER"));
+
+println("\n--- String Module ---");
+let str = std.str;
+let msg = "Hello, Parts!";
+let len = str.len;
+println("Length of '", msg, "': ", msg.len());
+
+"Using UFCS for string joining"
+let join = str.join;
+let greeting = "Hello ".join("World");
+println(greeting);

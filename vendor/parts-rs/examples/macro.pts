@@ -1,0 +1,11 @@
+part example {
+  (select @col in @db) => { println("Selecting ", @col, " of ", @db); }
+  (@db) => { println("Just a general identifier match lol ", @db); }
+  (@) => { println("Fallback for when anything else matches ", @); } 
+}
+
+example!{ select "data" in "life" };
+
+example!{ "data" };
+
+example!{ "data", "time" }

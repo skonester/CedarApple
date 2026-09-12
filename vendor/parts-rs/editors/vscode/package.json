@@ -1,0 +1,35 @@
+{
+  "name": "parts-language",
+  "displayName": "Parts Language Support",
+  "description": "Syntax highlighting and language support for the Parts programming language (.pts)",
+  "version": "0.1.0",
+  "publisher": "parts",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "parts",
+        "aliases": [
+          "Parts",
+          "parts"
+        ],
+        "extensions": [
+          ".pts"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "parts",
+        "scopeName": "source.pts",
+        "path": "./syntaxes/parts.tmLanguage.json"
+      }
+    ]
+  }
+}

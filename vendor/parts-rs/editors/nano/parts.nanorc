@@ -1,0 +1,40 @@
+## Syntax highlighting for Parts (.pts)
+
+syntax "parts" "\.pts$"
+comment "//"
+
+# Keywords
+color yellow "\b(let|fun|enum|import|syntax|translation|part)\b"
+color red "\b(if|else|match|for|in|return|break|continue|raise)\b"
+
+# Booleans & Constants
+color brightmagenta "\b(true|false|Ok|Err|Some|None)\b"
+
+# Types
+color brightgreen "\b(Int|Double|Bool|String|Bytes|Result|Option)\b"
+color green "\b[A-Z][a-zA-Z0-9_]*\b"
+
+# Built-in functions
+color brightblue "\b(println|print|input|exec|env|len|join|to_uppercase|to_lowercase|to_hex|push|is_ok|is_err|is_some|is_none|unwrap|unwrap_or|unwrap_err|expect)\b"
+
+# Numbers
+color magenta "\b[0-9]+(\.[0-9]+)?\b"
+color magenta "\b0[xX][0-9a-fA-F]+\b"
+color magenta "\b0[bB][01]+\b"
+
+# Macro variables and calls
+color cyan "@[a-zA-Z_][a-zA-Z0-9_]*"
+color brightyellow "\b[a-zA-Z_][a-zA-Z0-9_]*!"
+
+# Strings
+color brightyellow ""([^"\\]|\\.)*""
+color brightyellow "`([^`\\]|\\.)*`"
+color brightcyan "@std/[a-zA-Z0-9_./-]+"
+
+# Operators and Delimiters
+color brightred "(\|\|>|<\<\||=>|::|==|<=|>=|<|>|\+|-|\*|/|%|&|\||\^|!|=)"
+
+# Comments
+color brightblack "//.*$"
+color brightblack "/\*([^*]|\*[^/])*\*/"
+color brightblack "^#!.*$"

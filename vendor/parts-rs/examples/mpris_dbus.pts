@@ -1,0 +1,367 @@
+"Example: Connecting to user D-Bus daemon over Linux UNIX Domain Socket to query MPRIS media metadata"
+
+let std = import `@std/std.pts`;
+
+let pad_bytes(buf, alignment) {
+    let blen = __bytes_len(buf);
+    let rem = blen % alignment;
+    if rem > 0 {
+        let pad_count = alignment - rem;
+        let p = 0;
+        for p < pad_count {
+            __bytes_push(buf, 0);
+            p = p + 1;
+        }
+    }
+    return 1;
+}
+
+let append_u32_le(buf, val) {
+    let b0 = val & 255;
+    let b1 = (val >> 8) & 255;
+    let b2 = (val >> 16) & 255;
+    let b3 = (val >> 24) & 255;
+    __bytes_push(buf, b0);
+    __bytes_push(buf, b1);
+    __bytes_push(buf, b2);
+    __bytes_push(buf, b3);
+    return 1;
+}
+
+let append_str_val(buf, text) {
+    let str_bytes = __bytes_from_string(text);
+    let s_len = __bytes_len(str_bytes);
+    append_u32_le(buf, s_len);
+    __bytes_extend(buf, str_bytes);
+    __bytes_push(buf, 0);
+    return 1;
+}
+
+let append_header_field_str(fields, code, sig_type, text) {
+    pad_bytes(fields, 8);
+    __bytes_push(fields, code);
+    __bytes_push(fields, 1);
+    let sig_bytes = __bytes_from_string(sig_type);
+    __bytes_extend(fields, sig_bytes);
+    __bytes_push(fields, 0);
+    pad_bytes(fields, 4);
+    append_str_val(fields, text);
+    return 1;
+}
+
+let append_header_field_sig(fields, code, body_sig) {
+    pad_bytes(fields, 8);
+    __bytes_push(fields, code);
+    __bytes_push(fields, 1);
+    let g_byte = __bytes_from_string("g");
+    __bytes_extend(fields, g_byte);
+    __bytes_push(fields, 0);
+    let sig_bytes = __bytes_from_string(body_sig);
+    __bytes_push(fields, __bytes_len(sig_bytes));
+    __bytes_extend(fields, sig_bytes);
+    __bytes_push(fields, 0);
+    return 1;
+}
+
+let make_method_call(serial, dest, path, iface, member, body_bytes, body_sig) {
+    let fields = __bytes_new(0).unwrap();
+    append_header_field_str(fields, 1, "o", path);
+
+    if (iface == "") == false {
+        append_header_field_str(fields, 2, "s", iface);
+    }
+    append_header_field_str(fields, 3, "s", member);
+
+    if (dest == "") == false {
+        append_header_field_str(fields, 6, "s", dest);
+    }
+
+    if (body_sig == "") == false {
+        append_header_field_sig(fields, 8, body_sig);
+    }
+
+    let b_len = 0;
+    if (body_bytes == 0) == false {
+        b_len = __bytes_len(body_bytes);
+    }
+
+    let hdr = __bytes_new(0).unwrap();
+    __bytes_push(hdr, 108); "l = Little Endian"
+    __bytes_push(hdr, 1);   "1 = METHOD_CALL"
+    __bytes_push(hdr, 0);   "flags"
+    __bytes_push(hdr, 1);   "proto version"
+    append_u32_le(hdr, b_len);
+    append_u32_le(hdr, serial);
+    append_u32_le(hdr, __bytes_len(fields));
+    __bytes_extend(hdr, fields);
+    pad_bytes(hdr, 8);
+
+    if (body_bytes == 0) == false {
+        __bytes_extend(hdr, body_bytes);
+    }
+    return hdr;
+}
+
+let read_next_dbus_msg(sock) {
+    let hdr_res = __net_read(sock, 16);
+    if hdr_res.is_err() {
+        return std.Err("Failed to read header from socket");
+    }
+    let hdr = hdr_res.unwrap();
+    if __bytes_len(hdr) < 16 {
+        return std.Err("Incomplete D-Bus header");
+    }
+
+    let body_len = hdr.get_u32_le(4).unwrap();
+    let fields_len = hdr.get_u32_le(12).unwrap();
+
+    let total_hdr = 16 + fields_len;
+    let pad_len = (8 - (total_hdr % 8)) % 8;
+    let to_read_hdr = fields_len + pad_len;
+
+    let rest_hdr = __bytes_new(0).unwrap();
+    if to_read_hdr > 0 {
+        let rh_res = __net_read(sock, to_read_hdr);
+        if rh_res.is_err() {
+            return std.Err("Failed to read header fields");
+        }
+        rest_hdr = rh_res.unwrap();
+    }
+
+    let body = __bytes_new(0).unwrap();
+    if body_len > 0 {
+        for __bytes_len(body) < body_len {
+            let chunk_res = __net_read(sock, body_len - __bytes_len(body));
+            if chunk_res.is_err() {
+                return std.Err("Failed to read message body");
+            }
+            __bytes_extend(body, chunk_res.unwrap());
+        }
+    }
+
+    let full_msg = __bytes_new(0).unwrap();
+    __bytes_extend(full_msg, hdr);
+    __bytes_extend(full_msg, rest_hdr);
+    __bytes_extend(full_msg, body);
+    return std.Ok(full_msg);
+}
+
+let call_dbus_method(sock, serial, dest, path, iface, member, body_bytes, body_sig) {
+    let msg = make_method_call(serial, dest, path, iface, member, body_bytes, body_sig);
+    let write_res = __net_write(sock, msg);
+    if write_res.is_err() {
+        return std.Err(write_res.unwrap_err());
+    }
+
+    for true {
+        let resp_res = read_next_dbus_msg(sock);
+        if resp_res.is_err() {
+            return resp_res;
+        }
+        let resp = resp_res.unwrap();
+        let msg_type = resp[1];
+        if msg_type == 2 {
+            return std.Ok(resp);
+        }
+        if msg_type == 3 {
+            return std.Err("D-Bus returned error");
+        }
+    }
+    return std.Err("Unreachable");
+}
+
+let extract_dbus_body(msg) {
+    let fields_len = msg.get_u32_le(12).unwrap();
+    let total_hdr = 16 + fields_len;
+    let pad_len = (8 - (total_hdr % 8)) % 8;
+    let hdr_size = total_hdr + pad_len;
+    let total_len = __bytes_len(msg);
+    if total_len <= hdr_size {
+        return __bytes_new(0).unwrap();
+    }
+    return msg.slice(hdr_size, total_len).unwrap();
+}
+
+let parse_string_at(buf, offset) {
+    let s_len = buf.get_u32_le(offset).unwrap();
+    let str_bytes = buf.slice(offset + 4, offset + 4 + s_len).unwrap();
+    let str_val = str_bytes.to_string().unwrap();
+    return |>
+        val: str_val,
+        next_offset: offset + 4 + s_len + 1
+    <|;
+}
+
+let align_offset(offset, alignment) {
+    let rem = offset % alignment;
+    if rem > 0 {
+        return offset + (alignment - rem);
+    }
+    return offset;
+}
+
+let display_playback_status(body) {
+    "Body format for variant string: 1 byte sig len, 's', 0, pad to 4, uint32 len, string chars, 0"
+    let offset = 0;
+    let sig_len = body[0];
+    offset = offset + 1 + sig_len + 1;
+    offset = align_offset(offset, 4);
+
+    let parsed = parse_string_at(body, offset);
+    println("  Playback Status: ", parsed.val);
+    return 1;
+}
+
+let display_mpris_metadata(body) {
+    let offset = 0;
+    let sig_len = body[0];
+    offset = offset + 1 + sig_len + 1;
+    offset = align_offset(offset, 4);
+
+    let dict_len = body.get_u32_le(offset).unwrap();
+    offset = offset + 4;
+    offset = align_offset(offset, 8);
+
+    let dict_end = offset + dict_len;
+
+    for offset < dict_end {
+        offset = align_offset(offset, 8);
+        if offset >= dict_end {
+            return 1;
+        }
+
+        let key_parsed = parse_string_at(body, offset);
+        let key = key_parsed.val;
+        offset = key_parsed.next_offset;
+
+        let v_sig_len = body[offset];
+        let v_sig_bytes = body.slice(offset + 1, offset + 1 + v_sig_len).unwrap();
+        let v_sig = v_sig_bytes.to_string().unwrap();
+        offset = offset + 1 + v_sig_len + 1;
+
+        if v_sig == "s" {
+            offset = align_offset(offset, 4);
+            let val_parsed = parse_string_at(body, offset);
+            println("  ", key, ": ", val_parsed.val);
+            offset = val_parsed.next_offset;
+        } else {
+            if v_sig == "o" {
+                offset = align_offset(offset, 4);
+                let val_parsed = parse_string_at(body, offset);
+                println("  ", key, ": ", val_parsed.val);
+                offset = val_parsed.next_offset;
+            } else {
+                if v_sig == "as" {
+                    offset = align_offset(offset, 4);
+                    let arr_len = body.get_u32_le(offset).unwrap();
+                    offset = offset + 4;
+                    let arr_end = offset + arr_len;
+                    let first = true;
+                    print("  ", key, ": [");
+                    for offset < arr_end {
+                        offset = align_offset(offset, 4);
+                        if offset >= arr_end {
+                            break;
+                        }
+                        let item_parsed = parse_string_at(body, offset);
+                        if first {
+                            print(item_parsed.val);
+                            first = false;
+                        } else {
+                            print(", ", item_parsed.val);
+                        }
+                        offset = item_parsed.next_offset;
+                    }
+                    println("]");
+                } else {
+                    if v_sig == "x" {
+                        offset = align_offset(offset, 8);
+                        let length_us = body.get_u64_le(offset).unwrap();
+                        let length_sec = length_us / 1000000;
+                        println("  ", key, ": ", length_us, " us (~", length_sec, " seconds)");
+                        offset = offset + 8;
+                    } else {
+                        if v_sig == "u" {
+                            offset = align_offset(offset, 4);
+                            let num = body.get_u32_le(offset).unwrap();
+                            println("  ", key, ": ", num);
+                            offset = offset + 4;
+                        } else {
+                            println("  ", key, " (", v_sig, ")");
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+let run_mpris_example() {
+    let bus_path = "/run/user/1000/bus";
+    println("1. Connecting to Linux user D-Bus UNIX socket at: ", bus_path);
+
+    let conn_res = __net_unix_connect(bus_path);
+    if conn_res.is_err() {
+        println("Could not connect to D-Bus socket: ", conn_res.unwrap_err());
+        return 0;
+    }
+    let sock = conn_res.unwrap();
+
+    println("2. Performing SASL EXTERNAL Authentication...");
+    let auth_bytes = __bytes_new(0).unwrap();
+    __bytes_push(auth_bytes, 0);
+    __bytes_extend(auth_bytes, __bytes_from_string("AUTH EXTERNAL 31303030\r\n"));
+    __net_write(sock, auth_bytes);
+    let auth_resp = __net_read(sock, 1024).unwrap();
+    __net_write(sock, "BEGIN\r\n");
+
+    println("3. Registering with D-Bus via Hello()...");
+    let hello_res = call_dbus_method(sock, 1, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "Hello", 0, "");
+    if hello_res.is_err() {
+        println("Hello failed: ", hello_res.unwrap_err());
+        __net_close(sock);
+        return 0;
+    }
+    println("Connected and registered with D-Bus daemon successfully.");
+
+    let target_player = "org.mpris.MediaPlayer2.firefox.instance_1_41";
+    println("4. Querying MPRIS Status and Metadata for: ", target_player);
+
+    "--- Query PlaybackStatus ---"
+    let status_body = __bytes_new(0).unwrap();
+    append_str_val(status_body, "org.mpris.MediaPlayer2.Player");
+    pad_bytes(status_body, 4);
+    append_str_val(status_body, "PlaybackStatus");
+
+    let status_res = call_dbus_method(sock, 2, target_player, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties", "Get", status_body, "ss");
+    if status_res.is_err() {
+        println("Get PlaybackStatus failed: ", status_res.unwrap_err());
+    } else {
+        println("\n--- Playback Status ---");
+        let body = extract_dbus_body(status_res.unwrap());
+        display_playback_status(body);
+    }
+
+    "--- Query Metadata ---"
+    let body_bytes = __bytes_new(0).unwrap();
+    append_str_val(body_bytes, "org.mpris.MediaPlayer2.Player");
+    pad_bytes(body_bytes, 4);
+    append_str_val(body_bytes, "Metadata");
+
+    let meta_res = call_dbus_method(sock, 3, target_player, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties", "Get", body_bytes, "ss");
+    if meta_res.is_err() {
+        println("Get Metadata failed: ", meta_res.unwrap_err());
+    } else {
+        println("\n--- Media Metadata ---");
+        let body = extract_dbus_body(meta_res.unwrap());
+        display_mpris_metadata(body);
+    }
+
+    __net_close(sock);
+    println("\n5. D-Bus socket closed cleanly.");
+    return 1;
+}
+
+run_mpris_example();

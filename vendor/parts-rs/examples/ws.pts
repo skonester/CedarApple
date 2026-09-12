@@ -1,0 +1,61 @@
+let std = import `@std/std.pts`;
+let ws = std.ws;
+
+"Connect to live WebSocket server over WSS"
+let client_res = ws.connect_wss("echo.websocket.org", "/");
+let is_connected = client_res.is_ok();
+if (is_connected == false) {
+    return 0;
+}
+
+let client = client_res.unwrap();
+
+"Send masked text message to echo server"
+let mask_key = std.bytes.new(4).unwrap();
+mask_key[0] = 11;
+mask_key[1] = 22;
+mask_key[2] = 33;
+mask_key[3] = 44;
+
+let msg = "Hello from Parts WS Client!";
+
+println("Sending: ", msg);
+
+let frame = ws.text_frame(msg, true, mask_key);
+let send_res = ws.client_send(client, frame);
+
+"Receive bonjour response"
+let bonjour_res = ws.client_recv(client);
+let check_recv = bonjour_res.is_ok();
+if (check_recv == false) {
+    ws.client_close(client);
+    return 0;
+}
+
+let dec_info = bonjour_res.unwrap();
+let echo_text = dec_info.frame.payload.to_string().unwrap();
+
+
+let msg_res = ws.client_recv(client);
+let check_recv = msg_res.is_ok();
+if (check_recv == false) {
+    ws.client_close(client);
+    return 0;
+}
+
+ws.client_close(client);
+
+let dec_info = msg_res.unwrap();
+let echo_text = dec_info.frame.payload.to_string().unwrap();
+
+"Verify server response is valid and non-empty"
+let is_empty = (echo_text == "");
+let is_valid_payload = (is_empty == false);
+
+println("Got ", echo_text);
+
+if is_connected & check_recv & is_valid_payload {
+    return 1;
+} else {
+    return 0;
+}

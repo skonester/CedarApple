@@ -1,0 +1,14 @@
+"Parts Result Module"
+
+return |>
+    is_ok: __result_is_ok,
+    is_err: __result_is_err,
+    unwrap: __result_unwrap,
+    unwrap_or: __result_unwrap_or,
+    expect: __result_expect,
+    unwrap_err: __result_unwrap_err,
+    ok: __result_ok,
+    err: __result_err,
+    Ok: __result_ok,
+    Err: __result_err
+<|;

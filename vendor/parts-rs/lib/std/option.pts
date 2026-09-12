@@ -1,0 +1,14 @@
+"Parts Option Module"
+
+return |>
+    is_some: __option_is_some,
+    is_none: __option_is_none,
+    unwrap: __result_unwrap,
+    unwrap_or: __result_unwrap_or,
+    expect: __result_expect,
+    ok_or: __option_ok_or,
+    some: __option_some,
+    Some: __option_some,
+    none: __option_none,
+    None: __option_none
+<|;

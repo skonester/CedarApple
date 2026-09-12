@@ -1,0 +1,33 @@
+"Parts Standard Library Entry Point"
+
+return |>
+    math: import `./std/math.pts`,
+    sys:  import `./std/sys.pts`,
+    str:  import `./std/str.pts`,
+    result: import `./std/result.pts`,
+    option: import `./std/option.pts`,
+    bytes:  import `./std/bytes.pts`,
+    ws:     import `./std/ws.pts`,
+    net:    import `./std/net.pts`,
+    rotate_left: __byte_rotate_left,
+    len: __object_len,
+    is_ok: __result_is_ok,
+    is_err: __result_is_err,
+    is_some: __option_is_some,
+    is_none: __option_is_none,
+    unwrap: __result_unwrap,
+    unwrap_or: __result_unwrap_or,
+    expect: __result_expect,
+    unwrap_err: __result_unwrap_err,
+    ok_or: __option_ok_or,
+    Ok: __result_ok,
+    Err: __result_err,
+    Some: __option_some,
+    None: __option_none,
+    tcp_connect: __net_tcp_connect,
+    tls_connect: __net_tls_connect,
+    unix_connect: __net_unix_connect,
+    net_read: __net_read,
+    net_write: __net_write,
+    net_close: __net_close
+<|;

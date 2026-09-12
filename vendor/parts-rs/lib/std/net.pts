@@ -1,0 +1,10 @@
+"Parts Network Module"
+
+return |>
+    tcp_connect: __net_tcp_connect,
+    tls_connect: __net_tls_connect,
+    unix_connect: __net_unix_connect,
+    read: __net_read,
+    write: __net_write,
+    close: __net_close
+<|;

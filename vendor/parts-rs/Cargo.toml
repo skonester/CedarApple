@@ -1,0 +1,24 @@
+[package]
+name = "parts"
+version = "0.2.0"
+edition = "2024"
+
+[workspace]
+members = ["parts-macros"]
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+parts-macros = { path = "./parts-macros" }
+rust-embed = "8.12"
+rustc-hash = "2.1"
+native-tls = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+[profile.samply]
+inherits = "release"
+debug = true
+
+[[bench]]
+name = "interpreter_bench"
+harness = false

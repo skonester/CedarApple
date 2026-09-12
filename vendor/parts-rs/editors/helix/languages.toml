@@ -1,0 +1,12 @@
+[[language]]
+name = "parts"
+scope = "source.pts"
+file-types = ["pts"]
+comment-token = "//"
+roots = ["Cargo.toml", ".git"]
+indent = { tab-width = 4, unit = "    " }
+language-servers = ["parts-lsp"]
+
+[language-server.parts-lsp]
+command = "parts"
+args = ["--lsp"]

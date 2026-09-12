@@ -1,0 +1,17 @@
+"Parts Math Module"
+
+return |>
+    sin: __math_sin,
+    cos: __math_cos,
+    rand: __rand,
+    abs: fun (i) {
+        if i < 0 {
+            return 0 - i
+        } else {
+            return i
+        }
+    },
+    pow: __math_pow,
+    floor: __math_floor,
+    PI: 3.141592653589793
+<|;

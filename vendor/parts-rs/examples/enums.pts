@@ -1,0 +1,10 @@
+enum Direction {
+	North(power),
+	East(power),
+	South(power),
+	West(power)
+}
+
+let d = Direction::North(100.0);
+
+println(d.power)

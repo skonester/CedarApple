@@ -1,0 +1,55 @@
+let std = import `@std/std.pts`;
+
+"Macro:"
+
+part println {
+  (@) => { print(@); println(); }
+}
+
+"Show current playing music if the music is playing:"
+
+let status = std.sys.exec("playerctl", "status");
+
+if status == "Playing\n" {
+	println!{ std.sys.exec("playerctl", "metadata", "title") }
+} else {
+	println!{"art url path"}
+}
+
+"Fibonacci"
+
+let a = 0;
+let b = 1;
+let i = 0;
+
+for i < 10 {
+    let temp = a + b;
+    a = b;
+    b = temp;
+    i = i + 1;
+}
+
+println! {"b at fib(", i, ") is ", b }
+
+"Nested for"
+
+let idx_i = 0;
+let count = 0;
+for idx_i < 1000 {
+    let j = 0;
+    for j < 1000 {
+        count = count + 1;
+        j = j + 1;
+    }
+    idx_i = idx_i + 1;
+}
+
+println!{"Got ", count};
+
+"For each the elements"
+
+let obj = |> file: "*.pts", index: 0, alive: true <|
+
+for item in obj {
+	println!{item}
+}

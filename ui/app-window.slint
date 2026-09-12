@@ -1,0 +1,102 @@
+import { TrackSelector, TrackInfo } from "./trackselector.slint";
+
+import { Player } from "./player.slint";
+
+export component AppWindow inherits Window {
+    title: "CedarApple";
+    icon: @image-url("../images/program.ico");
+    background: #0b0b0b;
+
+    // Callbacks
+    callback toggle_pause();
+    callback skip_by(int);
+    callback seek(float);
+    callback user_activity();
+    callback select_audio_track(int);
+    callback select_subtitle_track(int);
+    callback change_speed(float);
+    callback open_file();
+
+    callback next();
+    callback previous();
+
+    in-out property <bool> is_loading: false;
+
+    // Player Properties
+    in property <image> video_frame;
+    in property <bool> is_paused: false;
+    in property <float> progress: 0.0;
+    in property <string> time_pos: "00:00";
+    in property <string> duration: "00:00";
+    in property <bool> controls_visible: true;
+
+    in property <bool> has_next: false;
+    in property <bool> has_previous: false;
+
+    in property <[TrackInfo]> audio_tracks: [];
+    in property <[TrackInfo]> subtitle_tracks: [];
+    in property <string> audio_track_name: "Default";
+    in property <string> subtitle_track_name: "None";
+    in property <string> playback_speed: "1.00x";
+    in property <string> video_title: "";
+    in property <string> remaining_time: "-00:00";
+    in property <string> ends_at: "";
+
+    // Sizes exported to Rust
+    out property <length> video_width: video_area.width;
+    out property <length> video_height: video_area.height;
+
+    video_area := Player {
+        width: 100%;
+        height: 100%;
+
+        video_frame: root.video_frame;
+        is_paused: root.is_paused;
+        progress: root.progress;
+        time_pos: root.time_pos;
+        duration: root.duration;
+        controls_visible: root.controls_visible;
+
+        audio_tracks: root.audio_tracks;
+        subtitle_tracks: root.subtitle_tracks;
+        audio_track_name: root.audio_track_name;
+        subtitle_track_name: root.subtitle_track_name;
+        playback_speed: root.playback_speed;
+        video_title: root.video_title;
+        remaining_time: root.remaining_time;
+        ends_at: root.ends_at;
+
+        has_next: root.has_next;
+        has_previous: root.has_previous;
+
+        next() => root.next();
+        previous => root.previous();
+
+        toggle_pause => toggle_pause();
+        skip_by(i) => skip_by(i);
+        seek(f) => seek(f);
+        user_activity => user_activity();
+        select_audio_track(idx) => select_audio_track(idx);
+        select_subtitle_track(idx) => select_subtitle_track(idx);
+        change_speed(s) => root.change_speed(s);
+        open_file => root.open_file();
+    }
+
+    // Loading Overlay
+    if (root.is_loading) : Rectangle {
+        background: #000000aa;
+        // This TouchArea covers the whole screen and swallows all clicks
+        TouchArea { }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 20px;
+            Text {
+                text: "Loading...";
+                color: white;
+                font-size: 24px;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
