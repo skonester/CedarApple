@@ -336,6 +336,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let mpv_card = mpv.clone();
+    ui.on_toggle_info_card(move |lean| {
+        // spincard registers both bindings under its own script name; the
+        // lean variant hides whatever `lean_hide` lists (the synopsis, by
+        // default). Pressing one while the other is up switches in place.
+        mpv_card.script_binding(if lean {
+            "spincard/toggle-lean"
+        } else {
+            "spincard/toggle"
+        });
+    });
+
+    // GPU button. Note this is NOT an OpenGL/Vulkan switch: libmpv's render
+    // API only defines "opengl" and "sw" (render.h), and CedarApple hands mpv
+    // a GL FBO, so the render backend is fixed by the embedding. hwdec is the
+    // GPU lever that is actually live here - it moves decoding on and off the
+    // GPU without touching how frames reach the window.
+    let mpv_gpu = mpv.clone();
+    let hwdec_readout = std::rc::Rc::new(slint::Timer::default());
+    ui.on_toggle_hwdec(move || {
+        let current = mpv_gpu
+            .get_property_string("hwdec")
+            .unwrap_or_else(|| "no".to_string());
+        let next = if current == "no" || current.is_empty() {
+            "auto"
+        } else {
+            "no"
+        };
+        mpv_gpu.set_property_string("hwdec", next);
+        mpv_gpu.show_text(&format!("hwdec: {next}..."), 1500);
+
+        // "auto" is a request, not an outcome - mpv picks (or refuses) a
+        // decoder when the video re-inits, so read hwdec-current back a beat
+        // later and report what it actually settled on.
+        let mpv_read = mpv_gpu.clone();
+        hwdec_readout.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(800),
+            move || {
+                let effective = mpv_read
+                    .get_property_string("hwdec-current")
+                    .unwrap_or_default();
+                let msg = match effective.as_str() {
+                    "" | "no" => "hwdec: off (CPU decoding)".to_string(),
+                    other => format!("hwdec: {other} (GPU decoding)"),
+                };
+                mpv_read.show_text(&msg, 3000);
+            },
+        );
+    });
+
     let mpv_seek = mpv.clone();
     ui.on_seek(move |perc| {
         let scmd = CString::new("seek").unwrap();
@@ -615,6 +666,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
     );
+
+    // TEMP SMOKE TEST - remove before commit.
+    let smoke = std::env::var("CEDAR_SPINCARD_SMOKE").ok();
+    let smoke_timer = slint::Timer::default();
+    if let Some(path) = smoke {
+        let mpv_s = mpv.clone();
+        let ui_s = ui.as_weak();
+        let tick = std::cell::Cell::new(0u32);
+        smoke_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(4), move || {
+            let n = tick.get() + 1;
+            tick.set(n);
+            let Some(ui) = ui_s.upgrade() else { return };
+            unsafe {
+                if n == 1 {
+                    ui.set_video_title("smoke".into());
+                    let k = CString::new("loop-file").unwrap();
+                    let v = CString::new("inf").unwrap();
+                    mpv_set_property_string(mpv_s.get(), k.as_ptr(), v.as_ptr());
+                    let cmd = CString::new("loadfile").unwrap();
+                    let url = CString::new(path.clone()).unwrap();
+                    let mut args = [cmd.as_ptr(), url.as_ptr(), ptr::null()];
+                    mpv_command(mpv_s.get(), args.as_mut_ptr());
+                } else if n == 4 {
+                    ui.invoke_toggle_hwdec();
+                }
+            }
+        });
+    }
 
     eprintln!("[CedarApple] Entering Slint event loop...");
     let result = ui.run();

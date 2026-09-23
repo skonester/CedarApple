@@ -1,10 +1,26 @@
 ﻿use crate::app_state::AppState;
 use libmpv_sys::*;
 use slint::Weak;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Mutex};
+
+/// Where mpv looks for `scripts/` and `script-opts/`: the `mpv/` folder next to
+/// the executable, which build.rs fills from `assets/mpv/`. The source tree is
+/// a fallback so a build whose assets never got copied still finds them.
+fn config_dir() -> Option<PathBuf> {
+    let next_to_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("mpv")));
+    let in_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/mpv");
+
+    [next_to_exe, Some(in_tree)]
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_dir())
+}
 
 #[derive(Clone)]
 pub struct MpvHandle(*mut mpv_handle);
@@ -28,6 +44,9 @@ impl MpvHandle {
                 ("vd-lavc-threads", "0"),
                 ("terminal", "yes"),
                 ("stop-screensaver", "yes"),
+                // mpv's own seek bar would fight CedarApple's; the card needs
+                // osd-level raised (below), so silence this explicitly.
+                ("osd-on-seek", "no"),
                 ("network-timeout", "10"),
             ];
 
@@ -37,14 +56,37 @@ impl MpvHandle {
                 mpv_set_property_string(handle, c_opt.as_ptr(), c_val.as_ptr());
             }
 
+            // 0 blanks mpv's OSD message layer outright. 1 leaves it live but
+            // silent: client-API commands never raise an OSD message on their
+            // own, and osd-on-seek=no above covers seeks. Scripts draw into
+            // separate OSD layers, which is how spincard's card reaches the
+            // render FBO.
             let c_osd = CString::new("osd-level").unwrap();
-            let mut zero: i64 = 0;
+            let mut osd_level: i64 = 1;
             mpv_set_property(
                 handle,
                 c_osd.as_ptr(),
                 mpv_format_MPV_FORMAT_INT64,
-                &mut zero as *mut _ as *mut c_void,
+                &mut osd_level as *mut _ as *mut c_void,
             );
+
+            // Point mpv at CedarApple's own config dir so it auto-loads the
+            // bundled scripts/ (spincard) and reads script-opts/spincard.conf.
+            // libmpv starts with config loading OFF and no config dir at all,
+            // so both have to be set, and set BEFORE mpv_initialize. Naming the
+            // dir explicitly also means the user's own ~/mpv config is never
+            // picked up - what ships is what runs.
+            if let Some(dir) = config_dir() {
+                let dir_str = dir.to_string_lossy().into_owned();
+                for (opt, val) in [("config", "yes"), ("config-dir", dir_str.as_str())] {
+                    let c_opt = CString::new(opt).unwrap();
+                    let c_val = CString::new(val).unwrap();
+                    mpv_set_option_string(handle, c_opt.as_ptr(), c_val.as_ptr());
+                }
+                eprintln!("[CedarApple] mpv config-dir: {}", dir.display());
+            } else {
+                eprintln!("[CedarApple] no mpv config dir found; scripts disabled");
+            }
 
             if mpv_initialize(handle) < 0 {
                 panic!("Failed to initialize mpv context");
@@ -61,7 +103,60 @@ impl MpvHandle {
         self.0
     }
 
+    /// Fire a script binding, e.g. `spincard/toggle`. Embedded libmpv gets no
+    /// keyboard input of its own, so a script's `mp.add_key_binding` never
+    /// triggers; this is how the UI reaches one.
+    pub fn script_binding(&self, name: &str) {
+        let cmd = CString::new("script-binding").unwrap();
+        let Ok(arg) = CString::new(name) else { return };
+        let mut args = [cmd.as_ptr(), arg.as_ptr(), ptr::null()];
+        unsafe {
+            mpv_command(self.get(), args.as_mut_ptr());
+        }
+    }
+
+    /// Read a property as a string, or None if mpv has no value for it (no
+    /// file loaded, unknown name). The buffer mpv hands back is its own, so it
+    /// is copied and freed here rather than borrowed.
+    pub fn get_property_string(&self, name: &str) -> Option<String> {
+        let c_name = CString::new(name).ok()?;
+        unsafe {
+            let raw = mpv_get_property_string(self.get(), c_name.as_ptr());
+            if raw.is_null() {
+                return None;
+            }
+            let out = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            mpv_free(raw as *mut c_void);
+            Some(out)
+        }
+    }
+
+    pub fn set_property_string(&self, name: &str, value: &str) {
+        let (Ok(c_name), Ok(c_val)) = (CString::new(name), CString::new(value)) else {
+            return;
+        };
+        unsafe {
+            mpv_set_property_string(self.get(), c_name.as_ptr(), c_val.as_ptr());
+        }
+    }
+
+    /// Put a message on mpv's OSD for `duration_ms`. It is drawn into the same
+    /// framebuffer as the video, so it lands under Slint's controls - and it
+    /// needs osd-level >= 1, which is why `new()` sets that.
+    pub fn show_text(&self, text: &str, duration_ms: u32) {
+        let cmd = CString::new("show-text").unwrap();
+        let (Ok(c_text), Ok(c_ms)) = (CString::new(text), CString::new(duration_ms.to_string()))
+        else {
+            return;
+        };
+        let mut args = [cmd.as_ptr(), c_text.as_ptr(), c_ms.as_ptr(), ptr::null()];
+        unsafe {
+            mpv_command(self.get(), args.as_mut_ptr());
+        }
+    }
+
     pub fn stop(&self) {
+
         let scmd = CString::new("stop").unwrap();
         let mut sargs = [scmd.as_ptr(), ptr::null()];
         unsafe {

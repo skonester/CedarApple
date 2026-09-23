@@ -1,0 +1,1002 @@
+-- spincard/images — the artwork pipeline: find, decode (ffmpeg → premultiplied
+-- BGRA), and draw (overlay-add) the poster, fanart backdrop (with a packed
+-- fade-in/out), banner, clearlogo title art, and the (optionally spinning) disc.
+-- Each subsystem owns a small state table {id,file,w,h,ready,shown,src,…}, exported
+-- so main can poke .ready/.src/.file during on_file_loaded.
+--
+-- images.init(opts, deps) wires it to runtime options + three getter closures the
+-- draw code needs from main (kept as closures so build_card / show()/hide() keep
+-- their own locals unchanged):
+--   deps.logo_rect() / deps.card_rect() — the 1280x720 rects build_card computes
+--   deps.visible()                      — whether the card is currently shown
+-- Artwork DISCOVERY lives in sidecar, so every layer shares one directory
+-- listing and one set of naming rules.
+
+local mp    = require "mp"
+local msg   = require "mp.msg"
+local utils = require "mp.utils"
+local sidecar = require("sidecar") -- find_art_near / find_in_dir / IMG_EXTS / ALPHA_EXTS
+local layout = require("layout")
+local util  = require("util") -- ellipsize_px / ass_escape for the cast labels; split_path / tmpdir
+local fanart = require("fanart") -- fanart.tv disc/banner lookup (init'd in M.init below)
+
+local TMPDIR = util.tmpdir() -- scratch dir for the per-session BGRA bitmaps
+
+local M = {}
+local RES_X, RES_Y = layout.RES_X, layout.RES_Y -- virtual card space (matches main's overlay res)
+
+local opts, deps = {}, {}
+function M.init(o, d) opts, deps = o, d; fanart.init(o) end
+-- fanart.tv disc/banner lookup, exposed on `images` so main can call it via the existing
+-- `images` upvalue (on_file_loaded is at the 60-upvalue ceiling — no new bound local).
+M.fanart_fetch = fanart.fetch_art
+
+-- Remote artwork (TMDB CDN) ------------------------------------------------
+-- Fetch a TMDB image (path like "/abc.jpg") at `size` (w500/w1280/original) via curl
+-- and hand the file to the normal decode path. cb(file) or cb(nil) on any failure
+-- (offline, 404, empty) so callers fall through cleanly. The SOURCE image is cached
+-- PERSISTENTLY under ~/.cache/spincard/img/<size>_<sanitised-path> — keyed on the
+-- stable TMDB path (NOT the mpv pid), so a title's art downloads ONCE and is reused
+-- across playback sessions; a cache hit skips curl entirely. (The per-session BGRA
+-- decode still runs, same as local art.) Download to a pid-tagged .part temp then
+-- rename, so an interrupted/concurrent transfer never leaves a corrupt cache entry.
+local TMDB_IMG = "https://image.tmdb.org/t/p/"
+local IMG_CACHE = util.path(util.home(), ".cache", "spincard", "img")
+util.mkdir_p(IMG_CACHE)
+-- Per-CALL, not per-process: one file load can fetch the same profile twice
+-- concurrently (two casthead prepares), and a shared temp means two curls write
+-- one file and both rename it — publishing a half-written image into the
+-- persistent cache, which then fails to decode on every later play.
+local fetch_seq = 0
+local function tmp_path(dest)
+    fetch_seq = fetch_seq + 1
+    return dest .. "." .. (mp.get_property("pid") or "x") .. "." .. fetch_seq .. ".part"
+end
+local function img_cache_path(size, path)
+    return util.path(IMG_CACHE, size .. "_" .. (path:gsub("[^%w%-_.]", "_")))
+end
+function M.fetch_image(path, size, _tag, cb)
+    if not path or path == "" then return cb(nil) end
+    local dest = img_cache_path(size, path)
+    local fi = utils.file_info(dest)
+    if fi and fi.size and fi.size > 0 then return cb(dest) end -- cache hit: no download
+    local tmp = tmp_path(dest)
+    local url = TMDB_IMG .. size .. path
+    mp.command_native_async({ name = "subprocess", playback_only = false,
+        args = { "curl", "-fsSL", "--max-time", "15", "-o", tmp, url } },
+        function(ok, res)
+            if not ok or not res or res.status ~= 0 then
+                os.remove(tmp); msg.warn("image fetch failed: " .. url); return cb(nil)
+            end
+            local f2 = utils.file_info(tmp)
+            if not f2 or not f2.size or f2.size == 0 then os.remove(tmp); return cb(nil) end
+            os.rename(tmp, dest) -- atomic publish into the cache
+            cb(dest)
+        end)
+end
+
+-- Download an ABSOLUTE image URL (e.g. a fanart.tv asset) into the same persistent img
+-- cache, keyed on the URL, then hand back the local path — mirrors fetch_image (which
+-- builds a TMDB URL from a path). Used for fanart.tv disc/banner art. cb(file) or cb(nil).
+function M.fetch_url(url, _tag, cb)
+    if not url or url == "" then return cb(nil) end
+    local dest = img_cache_path("url", url)
+    local fi = utils.file_info(dest)
+    if fi and fi.size and fi.size > 0 then return cb(dest) end -- cache hit: no download
+    local tmp = tmp_path(dest)
+    mp.command_native_async({ name = "subprocess", playback_only = false,
+        args = { "curl", "-fsSL", "--max-time", "15", "-o", tmp, url } },
+        function(ok, res)
+            if not ok or not res or res.status ~= 0 then
+                os.remove(tmp); msg.warn("image fetch failed: " .. url); return cb(nil)
+            end
+            local f2 = utils.file_info(tmp)
+            if not f2 or not f2.size or f2.size == 0 then os.remove(tmp); return cb(nil) end
+            os.rename(tmp, dest) -- atomic publish into the cache
+            cb(dest)
+        end)
+end
+
+-- Poster image: decode a local jpg -> BGRA (ffmpeg), draw with overlay-add ---
+
+local poster = {
+    id = 1,
+    file = util.path(TMPDIR, "spincard-poster-"
+        .. (mp.get_property("pid") or "x") .. ".bgra"),
+    w = 0, h = 0, face_w = 0, face_h = 0, ready = false, shown = false, src = nil,
+}
+M.poster = poster
+local POSTER_H = 450 -- decode height in px; on-screen size is scaled to the OSD
+-- Soft drop shadow baked into the poster BGRA (down-right, matching the cast strip).
+-- poster.w/h are the padded bitmap; poster.face_w/face_h are the poster itself.
+local POSTER_SHO = math.max(2, math.floor(POSTER_H * 0.013)) -- shadow offset, down-right (~6) — thin, like the cast strip
+local POSTER_SIG = 5                                          -- shadow blur sigma (matches the cast strip)
+local POSTER_PAD = POSTER_SHO + 3 * POSTER_SIG               -- right/bottom room so the blur isn't clipped (~21)
+
+function M.poster_decode(srcpath, cb)
+    -- Bake a soft drop shadow (down-right, matching the cast strip) into the poster:
+    -- pad the canvas right+bottom for the offset+blur (relative pad, since scale=-2 makes
+    -- the width unknown here), blur a black silhouette of the poster's alpha and
+    -- composite it UNDER the poster; premultiply last for overlay-add. The poster face
+    -- sits at the bitmap's top-left, so poster.face_w/face_h anchor it and the shadow pad
+    -- extends past its right/bottom edges.
+    local fc = {
+        "[0:v]scale=-2:" .. POSTER_H .. ",format=rgba,pad=iw+" .. POSTER_PAD .. ":ih+"
+            .. POSTER_PAD .. ":0:0:color=black@0,split=3[top][shsrc][bgsrc]",
+        "[bgsrc]colorchannelmixer=aa=0[bg]",                                    -- transparent canvas, padded size
+        string.format("[shsrc]geq=r=0:g=0:b=0:a=alpha(X\\,Y),gblur=sigma=%d[sh]", POSTER_SIG),
+        string.format("[bg][sh]overlay=%d:%d[bgsh]", POSTER_SHO, POSTER_SHO),   -- shadow offset down-right
+        "[bgsh][top]overlay=0:0,premultiply=inplace=1[o]",
+    }
+    mp.command_native_async({
+        name = "subprocess", playback_only = false,
+        args = { "ffmpeg", "-y", "-loglevel", "error", "-i", srcpath,
+            "-filter_complex", table.concat(fc, ";"), "-map", "[o]",
+            "-frames:v", "1", "-pix_fmt", "bgra", "-f", "rawvideo", poster.file },
+    }, function(ok, res)
+        if not ok or not res or res.status ~= 0 then
+            msg.warn("poster decode failed"); return cb(false)
+        end
+        local fi = utils.file_info(poster.file)
+        if not fi or not fi.size or fi.size == 0 then return cb(false) end
+        poster.h = POSTER_H + POSTER_PAD               -- padded bitmap height (face + shadow band)
+        poster.w = math.floor(fi.size / (4 * poster.h))
+        poster.face_h, poster.face_w = POSTER_H, poster.w - POSTER_PAD
+        poster.ready, poster.src = true, srcpath
+        msg.verbose(string.format("poster %dx%d (+shadow) ready", poster.face_w, poster.face_h))
+        cb(true)
+    end)
+end
+
+function M.poster_hide()
+    if poster.shown then
+        mp.command_native({ "overlay-remove", poster.id })
+        poster.shown = false
+    end
+end
+
+function M.poster_show()
+    if not opts.show_poster or not poster.ready then return end
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 then return end
+    -- Size by the FACE (excl. the baked shadow pad) so poster_height still means the
+    -- visible poster height; scale the whole bitmap (face + shadow) by the same factor.
+    local fw, fh = poster.face_w, poster.face_h
+    if not fw or fw == 0 then fw, fh = poster.w, poster.h end -- safety (no baked shadow)
+    local dh = math.floor(oh * opts.poster_height)
+    local scale = dh / fh
+    local dw = math.floor(fw * scale)
+    local max_dw = math.floor(ow * (tonumber(opts.poster_max_width) or 0)) -- 0 = no cap
+    if max_dw > 0 and dw > max_dw then       -- landscape episode thumbs blow out wide
+        dw = max_dw; scale = dw / fw; dh = math.floor(fh * scale) -- keep aspect ratio
+    end
+    local bmp_dw, bmp_dh = math.floor(poster.w * scale), math.floor(poster.h * scale)
+    -- Mirror the left-side inset used by the banner / cast strip (oh*0.03 ≈ the card's
+    -- pos_x): put the poster's FACE right edge the same distance in from the RIGHT edge,
+    -- plus a small allowance for the (thin) shadow border so it sits inside the gap.
+    local inset = math.floor(oh * 0.03)
+    local x = ow - inset - math.floor(POSTER_SHO * scale) - dw -- face top-left; shadow extends right/bottom
+    local top = math.floor(oh * opts.poster_margin)           -- TOP gap unchanged
+    mp.command_native({
+        name = "overlay-add", id = poster.id,
+        x = x, y = top,
+        file = poster.file, offset = 0, fmt = "bgra",
+        w = poster.w, h = poster.h, stride = poster.w * 4,
+        dw = bmp_dw, dh = bmp_dh,
+    })
+    poster.shown = true
+end
+
+-- Fanart backdrop: decode a dimmed local jpg -> BGRA, draw full-frame ---------
+-- Kodi/Emby naming: <file>-fanart, fanart, backdrop (+ show-level).
+-- Note: mpv draws image overlays above ASS text, so this tints the card too;
+-- fanart.id is lower than poster.id so the poster stays on top.
+
+local fanart = {
+    id = 0,
+    file = util.path(TMPDIR, "spincard-fanart-"
+        .. (mp.get_property("pid") or "x") .. ".bgra"),
+    w = 0, h = 0, ready = false, shown = false, src = nil,
+}
+M.fanart = fanart
+local FANART_H = 720 -- decode height for the dimmed backdrop
+
+function M.find_fanart(path, id)
+    local _, base = util.split_path(path)
+    return sidecar.find_art_near(path, id,
+        { base .. "-fanart", base .. "-backdrop" },
+        { "fanart", "backdrop" }, sidecar.IMG_EXTS)
+end
+
+-- Decode the fanart to one premultiplied-BGRA dimmed frame: RGB + alpha scaled by
+-- fanart_opacity so the still backdrop sits readably under the card text.
+function M.fanart_decode(srcpath, cb)
+    local op = string.format("%.3f", math.max(0, math.min(1, opts.fanart_opacity)))
+    local vf = string.format(
+        "scale=-2:%d,format=rgba,colorchannelmixer=rr=%s:gg=%s:bb=%s:aa=%s",
+        FANART_H, op, op, op, op)
+    local args = { "ffmpeg", "-y", "-loglevel", "error", "-i", srcpath,
+        "-vf", vf, "-pix_fmt", "bgra", "-f", "rawvideo", fanart.file }
+    mp.command_native_async({ name = "subprocess", playback_only = false, args = args },
+        function(ok, res)
+        if not ok or not res or res.status ~= 0 then
+            msg.warn("fanart decode failed"); return cb(false)
+        end
+        local fi = utils.file_info(fanart.file)
+        if not fi or not fi.size or fi.size == 0 then return cb(false) end
+        fanart.h = FANART_H
+        fanart.w = math.floor(fi.size / (4 * FANART_H))
+        fanart.ready, fanart.src = true, srcpath
+        msg.verbose(string.format("fanart %dx%d ready", fanart.w, fanart.h))
+        cb(true)
+    end)
+end
+
+-- Static dimmed backdrop: no timer, no fade. Shown while the card is up (gated by
+-- fanart_pause_only in main), redrawn on OSD resize via the osd-width observer.
+function M.fanart_hide()
+    if fanart.shown then
+        mp.command_native({ "overlay-remove", fanart.id })
+        fanart.shown = false
+    end
+end
+
+local function fanart_draw()
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 then return false end
+    mp.command_native({ name = "overlay-add", id = fanart.id, x = 0, y = 0,
+        file = fanart.file, offset = 0,
+        fmt = "bgra", w = fanart.w, h = fanart.h, stride = fanart.w * 4, dw = ow, dh = oh })
+    fanart.shown = true
+    return true
+end
+
+function M.fanart_show()
+    if not opts.show_fanart or not fanart.ready then return end
+    fanart_draw() -- returns false if the OSD isn't sized yet; retried via the osd-width observer
+end
+
+-- Banner: wide title art (banner.jpg), opaque, drawn top-left ---------------
+
+local banner = {
+    id = 3,
+    file = util.path(TMPDIR, "spincard-banner-"
+        .. (mp.get_property("pid") or "x") .. ".bgra"),
+    w = 0, h = 0, face_w = 0, face_h = 0, ready = false, shown = false, src = nil,
+}
+M.banner = banner
+local BANNER_H = 200
+-- Soft drop shadow baked into the banner BGRA (down-right, like the poster/cast strip).
+-- banner.w/h are the padded bitmap; banner.face_w/face_h are the banner itself.
+local BANNER_SHO = math.max(2, math.floor(BANNER_H * 0.02)) -- shadow offset, down-right (~4)
+local BANNER_SIG = 5                                        -- shadow blur sigma (matches the poster)
+local BANNER_PAD = BANNER_SHO + 3 * BANNER_SIG             -- right/bottom room so the blur isn't clipped (~19)
+
+function M.find_banner(path, id)
+    local _, base = util.split_path(path)
+    return sidecar.find_art_near(path, id,
+        { base .. "-banner" }, { "banner" }, sidecar.IMG_EXTS)
+end
+
+function M.banner_decode(srcpath, cb)
+    -- Bake a soft drop shadow (down-right, like the poster) into the banner: pad the canvas
+    -- right+bottom for the offset+blur, blur a black silhouette of the banner's alpha and
+    -- composite it UNDER the banner; premultiply last. The banner sits at the bitmap's
+    -- top-left, so banner.face_w/face_h anchor it and the shadow pad extends right/bottom.
+    local fc = {
+        "[0:v]scale=-2:" .. BANNER_H .. ",format=rgba,pad=iw+" .. BANNER_PAD .. ":ih+"
+            .. BANNER_PAD .. ":0:0:color=black@0,split=3[top][shsrc][bgsrc]",
+        "[bgsrc]colorchannelmixer=aa=0[bg]",                                    -- transparent canvas, padded size
+        string.format("[shsrc]geq=r=0:g=0:b=0:a=alpha(X\\,Y),gblur=sigma=%d[sh]", BANNER_SIG),
+        string.format("[bg][sh]overlay=%d:%d[bgsh]", BANNER_SHO, BANNER_SHO),   -- shadow offset down-right
+        "[bgsh][top]overlay=0:0,premultiply=inplace=1[o]",
+    }
+    mp.command_native_async({
+        name = "subprocess", playback_only = false,
+        args = { "ffmpeg", "-y", "-loglevel", "error", "-i", srcpath,
+            "-filter_complex", table.concat(fc, ";"), "-map", "[o]",
+            "-frames:v", "1", "-pix_fmt", "bgra", "-f", "rawvideo", banner.file },
+    }, function(ok, res)
+        if not ok or not res or res.status ~= 0 then
+            msg.warn("banner decode failed"); return cb(false)
+        end
+        local fi = utils.file_info(banner.file)
+        if not fi or not fi.size or fi.size == 0 then return cb(false) end
+        banner.h = BANNER_H + BANNER_PAD               -- padded bitmap height (banner + shadow band)
+        banner.w = math.floor(fi.size / (4 * banner.h))
+        banner.face_h, banner.face_w = BANNER_H, banner.w - BANNER_PAD
+        banner.ready, banner.src = true, srcpath
+        msg.verbose(string.format("banner %dx%d (+shadow) ready", banner.face_w, banner.face_h))
+        cb(true)
+    end)
+end
+
+function M.banner_hide()
+    if banner.shown then
+        mp.command_native({ "overlay-remove", banner.id })
+        banner.shown = false
+    end
+end
+
+function M.banner_show()
+    if not opts.show_banner or not banner.ready then return end
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 then return end
+    -- Size by the FACE (excl. the baked shadow pad) so banner_height still means the
+    -- visible banner height; scale the whole bitmap (banner + shadow) by the same factor.
+    -- The banner sits top-left, so the shadow pad simply extends down-right (no clipping).
+    local fw, fh = banner.face_w, banner.face_h
+    if not fw or fw == 0 then fw, fh = banner.w, banner.h end -- safety (no baked shadow)
+    local dh = math.floor(oh * opts.banner_height)
+    local scale = dh / fh
+    local margin = math.floor(oh * 0.03)
+    mp.command_native({
+        name = "overlay-add", id = banner.id, x = margin, y = margin,
+        file = banner.file, offset = 0, fmt = "bgra",
+        w = banner.w, h = banner.h, stride = banner.w * 4,
+        dw = math.floor(banner.w * scale), dh = math.floor(banner.h * scale),
+    })
+    banner.shown = true
+end
+
+-- Clearlogo (title art) + disc: transparent PNGs, premultiplied -------------
+
+local clearlogo = {
+    id = 4,
+    file = util.path(TMPDIR, "spincard-logo-"
+        .. (mp.get_property("pid") or "x") .. ".bgra"),
+    w = 0, h = 0, ready = false, shown = false, src = nil,
+}
+M.clearlogo = clearlogo
+local LOGO_H = 240
+local LOGO_GAP = 6      -- gap (virtual px) between the clearlogo band and the first text row
+M.LOGO_GAP = LOGO_GAP   -- build_card reads this to place the first text row below the logo
+
+local disc = {
+    id = 5,
+    file = util.path(TMPDIR, "spincard-disc-"
+        .. (mp.get_property("pid") or "x") .. ".bgra"),
+    w = 0, h = 0, ready = false, shown = false, src = nil,
+    frames = 1, framebytes = 0, spin_idx = 0, spin_timer = nil,
+}
+M.disc = disc
+local DISC_H = 256      -- decode height (square); modest for mpv 0.41 offsets
+
+-- Decode a transparent PNG to premultiplied BGRA (overlay-add wants premult).
+-- pre_vf runs BEFORE scale (native px, e.g. crop=W:H:X:Y); extra_vf runs after
+-- scale, before premultiply (e.g. an alpha mask).
+local function png_decode(img, srcpath, height, cb, extra_vf, pre_vf)
+    local vf = ""
+    if pre_vf then vf = pre_vf .. "," end -- native-px crop, before scale
+    vf = vf .. "scale=-2:" .. height .. ",format=rgba"
+    if extra_vf then vf = vf .. "," .. extra_vf end -- e.g. alpha mask, before premult
+    vf = vf .. ",premultiply=inplace=1"
+    mp.command_native_async({
+        name = "subprocess", playback_only = false,
+        args = { "ffmpeg", "-y", "-loglevel", "error", "-i", srcpath,
+            "-vf", vf, "-pix_fmt", "bgra", "-f", "rawvideo", img.file },
+    }, function(ok, res)
+        if not ok or not res or res.status ~= 0 then
+            msg.warn("png decode failed"); return cb(false)
+        end
+        local fi = utils.file_info(img.file)
+        if not fi or not fi.size or fi.size == 0 then return cb(false) end
+        img.h = height
+        img.w = math.floor(fi.size / (4 * height))
+        img.ready, img.src = true, srcpath
+        msg.verbose(string.format("%s %dx%d ready", srcpath:match("([^/\\]+)$"), img.w, img.h))
+        cb(true)
+    end)
+end
+
+-- ALPHA_EXTS (png-only) for both of these — see sidecar.
+function M.find_clearlogo(path, id)
+    local _, base = util.split_path(path)
+    return sidecar.find_art_near(path, id,
+        { base .. "-clearlogo", base .. "-logo" },
+        { "clearlogo", "logo" }, sidecar.ALPHA_EXTS)
+end
+
+-- "discart" is Kodi's original name for disc art, "disc" the newer alias.
+function M.find_disc(path, id)
+    local _, base = util.split_path(path)
+    return sidecar.find_art_near(path, id,
+        { base .. "-disc", base .. "-discart" },
+        { "disc", "discart" }, sidecar.ALPHA_EXTS)
+end
+
+-- Decode the clearlogo cropped to its opaque bounding box, so the reserved title
+-- slot maps to real artwork rather than the PNG's (variable) transparent margins.
+-- Pass 1 runs cropdetect over the ALPHA plane (alphaextract) to find the bbox;
+-- pass 2 decodes with that crop applied before scale (native-px coords). If
+-- detection yields nothing (older ffmpeg, or a logo whose shadow bleeds to the
+-- edge) it falls back to a plain full-frame decode — never breaks the logo.
+--   limit=0 : trim only fully-transparent rows/cols (any opacity is kept)
+--   skip=0  : cropdetect skips the first 2 frames by default → none for a still,
+--             so force skip=0 and feed a few looped frames as belt-and-suspenders
+function M.clearlogo_decode(srcpath, cb)
+    if not opts.logo_autocrop then return png_decode(clearlogo, srcpath, LOGO_H, cb) end
+    mp.command_native_async({
+        name = "subprocess", playback_only = false, capture_stderr = true,
+        args = { "ffmpeg", "-y", "-loglevel", "info", "-loop", "1", "-i", srcpath,
+            "-vf", "format=rgba,alphaextract,cropdetect=limit=0:round=2:reset=1:skip=0",
+            "-frames:v", "3", "-f", "null", "-" },
+    }, function(ok, res)
+        local crop
+        if ok and res and res.stderr then
+            for w, h, ox, oy in res.stderr:gmatch("crop=(%d+):(%d+):(%d+):(%d+)") do
+                crop = string.format("crop=%s:%s:%s:%s", w, h, ox, oy) -- keep the last
+            end
+        end
+        png_decode(clearlogo, srcpath, LOGO_H, cb, nil, crop)
+    end)
+end
+
+function M.img_remove(img)
+    if img.shown then mp.command_native({ "overlay-remove", img.id }); img.shown = false end
+end
+
+-- Draw the clearlogo in the card's title slot (logo_rect is in 1280x720 virtual
+-- coords set by build_card), converted to OSD pixels; clamped to card width.
+function M.place_logo()
+    local logo_rect = deps.logo_rect()
+    if not (opts.show_logo and clearlogo.ready and logo_rect) then return end
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 then return end
+    local sx, sy = ow / RES_X, oh / RES_Y
+    local dh = math.floor(logo_rect.h * sy)
+    local dw = math.floor(clearlogo.w * (dh / clearlogo.h))
+    local max_dw = math.floor(layout.INNER * sx) -- card inner width (shared const)
+    if dw > max_dw then dw = max_dw; dh = math.floor(clearlogo.h * (dw / clearlogo.w)) end
+    mp.command_native({ name = "overlay-add", id = clearlogo.id,
+        x = math.floor(logo_rect.x * sx), y = math.floor(logo_rect.y * sy),
+        file = clearlogo.file, offset = 0, fmt = "bgra",
+        w = clearlogo.w, h = clearlogo.h, stride = clearlogo.w * 4, dw = dw, dh = dh })
+    clearlogo.shown = true
+end
+
+-- Fixed notch: cut the BOTTOM-LEFT quadrant (the one that overlaps the card at the
+-- top-right corner) so the 3/4 disc nestles into the card's top-right corner.
+local DISC_MASK = "geq=r=r(X\\,Y):g=g(X\\,Y):b=b(X\\,Y):a=if(lt(X\\,W/2)*gt(Y\\,H/2)\\,0\\,alpha(X\\,Y))"
+
+-- Decode the disc: a single 3/4 frame, or DISC_FRAMES rotation frames packed
+-- into one file (rotate -> fixed notch mask -> premultiply -> bgra).
+function M.disc_decode(srcpath, cb)
+    -- A pause-only disc never spins (only frame 0 is ever drawn), so decode a SINGLE static
+    -- frame like disc_spin=false — skips the heavy rotate+mask pass and the ~n×256²×4 packed
+    -- temp (pure waste on the weak box this opt exists for).
+    local spin = opts.disc_spin and not opts.disc_pause_only
+    local args
+    if spin then
+        local n = math.max(2, math.floor(opts.disc_spin_frames or 36))
+        local vf = string.format(
+            "scale=%d:%d,format=rgba,rotate=2*PI*t:fillcolor=none,%s,premultiply=inplace=1",
+            DISC_H, DISC_H, DISC_MASK)
+        args = { "ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-i", srcpath,
+            "-r", tostring(n), "-t", "1", "-vf", vf,
+            "-frames:v", tostring(n), "-pix_fmt", "bgra", "-f", "rawvideo", disc.file }
+        disc.frames = n
+    else
+        local vf = string.format("scale=-2:%d,format=rgba,%s,premultiply=inplace=1", DISC_H, DISC_MASK)
+        args = { "ffmpeg", "-y", "-loglevel", "error", "-i", srcpath,
+            "-vf", vf, "-pix_fmt", "bgra", "-f", "rawvideo", disc.file }
+        disc.frames = 1
+    end
+    mp.command_native_async({ name = "subprocess", playback_only = false, args = args }, function(ok, res)
+        if not ok or not res or res.status ~= 0 then msg.warn("disc decode failed"); return cb(false) end
+        local fi = utils.file_info(disc.file)
+        if not fi or not fi.size or fi.size == 0 then return cb(false) end
+        disc.h = DISC_H
+        disc.w = spin and DISC_H or math.floor(fi.size / (4 * DISC_H))
+        disc.framebytes = disc.w * disc.h * 4
+        disc.ready, disc.src = true, srcpath
+        msg.verbose(string.format("disc %dx%d x%d frames ready", disc.w, disc.h, disc.frames))
+        cb(true)
+    end)
+end
+
+-- 3/4 disc centred on the card's top-RIGHT corner; `frame` picks a rotation frame
+-- via the file byte offset (defaults to the current spin frame). (Moved from the
+-- top-left corner so it never clashes with the top-left cast-headshot strip.)
+function M.disc_show(frame)
+    local card_rect = deps.card_rect()
+    if not (opts.show_disc and disc.ready and card_rect) then return end
+    -- disc_pause_only: keep the disc off the screen during playback (that's when it spins
+    -- = the CPU cost on a weak GPU); it's shown, frozen, only while paused. The pause
+    -- observer draws it on pause and img_remove()s it on resume.
+    if opts.disc_pause_only and not mp.get_property_bool("pause") then return end
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 then return end
+    frame = frame or disc.spin_idx or 0
+    local sx, sy = ow / RES_X, oh / RES_Y
+    local dh = math.floor(oh * opts.disc_size)
+    local dw = math.floor(disc.w * (dh / disc.h))
+    local cx, cy = (card_rect.x + card_rect.w) * sx, card_rect.y * sy
+    mp.command_native({ name = "overlay-add", id = disc.id,
+        x = math.floor(cx - dw / 2), y = math.floor(cy - dh / 2),
+        file = disc.file, offset = frame * (disc.framebytes or 0), fmt = "bgra",
+        w = disc.w, h = disc.h, stride = disc.w * 4, dw = dw, dh = dh })
+    disc.shown = true
+end
+
+function M.disc_spin_stop()
+    if disc.spin_timer then disc.spin_timer:kill(); disc.spin_timer = nil end
+end
+
+function M.disc_spin_start()
+    M.disc_spin_stop()
+    if opts.disc_pause_only then return end -- a pause-only disc never spins (shown frozen, while paused only)
+    if not (opts.disc_spin and opts.show_disc and disc.ready and disc.frames > 1) then return end
+    if mp.get_property_bool("pause") then return end -- a paused disc doesn't spin; the pause observer restarts it on resume
+    disc.spin_timer = mp.add_periodic_timer(opts.disc_spin_secs / disc.frames, function()
+        if not deps.visible() then return end
+        disc.spin_idx = (disc.spin_idx + 1) % disc.frames
+        M.disc_show(disc.spin_idx)
+    end)
+end
+
+-- Cast headshots strip: a row of TMDB profile photos drawn as a SEPARATE desktop
+-- overlay (a sibling of the banner/poster, NOT on the card), top-left, under the
+-- banner when one is present. Each head is a square opaque BGRA (its own overlay,
+-- ids 6+); the names ride a SECOND osd-overlay (kept off the card overlay so the
+-- card's bottom-anchor shift never moves them). Static: draws only the faces that
+-- fit one row. TMDB-only (profiles come from credits[].profile_path).
+local casthead = {
+    base = util.path(TMPDIR, "spincard-cast-" .. (mp.get_property("pid") or "x")),
+    ids = { 6, 7, 8, 9, 10, 11 }, -- free overlay-id block (static: one per head; scroll: 6=window, 7=wrap seam)
+    heads = {},   -- static style: [i] = { file, w, h, ready, src, name }
+    names_ov = nil,
+    packed = {    -- scroll style: ALL faces hstacked into ONE wide premultiplied BGRA
+        file = util.path(TMPDIR, "spincard-castrow-" .. (mp.get_property("pid") or "x") .. ".bgra"),
+        w = 0, h = 0, face_h = 0, ready = false, -- h includes the baked shadow band; face_h is the face row
+    },
+    scroll_idx = 0, scroll_timer = nil, wrap_shown = false, -- marquee offset, timer, seam-overlay state
+    labels = nil, -- scroll style: [i] = {name, role} in lockstep with the packed faces
+    shown = false,
+    token = 0,    -- current prepare's seq; async cbs of a superseded prepare bail
+}
+M.casthead = casthead
+-- One file load fires casthead_prepare TWICE when a cached card already carries
+-- cast and the cache is stale (main fires it at load and again from the do_tmdb
+-- callback), so the supersession token must be per-PREPARE. It used to be the file
+-- generation, which is identical for both — so neither was suppressed, both ran
+-- ffmpeg over the same output path, and the loser reported 0 faces, which the
+-- caller reads as "no faces decoded" and answers by restoring the text cast.
+local prepare_seq = 0
+local last_prep = { gen = nil, sig = nil, state = nil } -- "inflight" | "ok" | "fail"
+local CAST_DECODE_H = 160 -- head native height (square); scaled to OSD at draw
+
+-- SCROLL style: pack all fetched faces into ONE wide premultiplied BGRA (square
+-- face-biased crop + a transparent trailing gap per face → a uniform loop seam), so
+-- the marquee is a single overlay windowed by byte offset — overlay-add has no clip,
+-- which is exactly why scroll was deferred; the offset/stride trick sidesteps it.
+local function casthead_build_packed(files, token, cb)
+    local n = #files
+    if n == 0 then return cb(0) end
+    local H = CAST_DECODE_H
+    local G = math.max(8, math.floor(H * 0.18))   -- transparent gap between faces
+    local SHO = math.max(2, math.floor(H * 0.045)) -- drop-shadow offset (down-right)
+    local SIG = 5                                    -- shadow blur sigma
+    local PB = SHO + 3 * SIG                          -- bottom room so the shadow isn't clipped
+    local W, HP = n * (H + G), H + PB
+    local args = { "ffmpeg", "-y", "-loglevel", "error" }
+    for _, f in ipairs(files) do args[#args + 1] = "-i"; args[#args + 1] = f end
+    local fc = {}
+    for i = 1, n do -- per input: square face-crop → scale → transparent trailing gap
+        fc[#fc + 1] = string.format(
+            "[%d:v]crop=iw:iw:0:(ih-iw)/4,scale=%d:%d,format=rgba,pad=%d:%d:0:0:color=black@0[v%d]",
+            i - 1, H, H, H + G, H, i - 1)
+    end
+    local row = "[v0]"
+    if n > 1 then
+        local lab = {}
+        for i = 1, n do lab[#lab + 1] = string.format("[v%d]", i - 1) end
+        fc[#fc + 1] = table.concat(lab) .. string.format("hstack=inputs=%d[row]", n)
+        row = "[row]"
+    end
+    -- Soft drop shadow behind each face (matches the static strip): pad a bottom band
+    -- for the offset shadow, blur a black silhouette of the faces, composite it UNDER
+    -- them. Faces are opaque squares separated by transparent gaps, so each gets its own
+    -- shadow peeking down-right into the gap; premultiply last for overlay-add.
+    fc[#fc + 1] = row .. string.format("pad=%d:%d:0:0:color=black@0,split[top][shsrc]", W, HP)
+    fc[#fc + 1] = string.format("[shsrc]geq=r=0:g=0:b=0:a=alpha(X\\,Y),gblur=sigma=%d[sh]", SIG)
+    fc[#fc + 1] = string.format("color=black@0:s=%dx%d:d=1,format=rgba[bg]", W, HP)
+    fc[#fc + 1] = string.format("[bg][sh]overlay=%d:%d:shortest=1[bgsh]", SHO, SHO)
+    fc[#fc + 1] = "[bgsh][top]overlay=0:0,premultiply=inplace=1[o]"
+    args[#args + 1] = "-filter_complex"; args[#args + 1] = table.concat(fc, ";")
+    args[#args + 1] = "-map"; args[#args + 1] = "[o]"
+    args[#args + 1] = "-frames:v"; args[#args + 1] = "1"
+    args[#args + 1] = "-pix_fmt"; args[#args + 1] = "bgra"
+    args[#args + 1] = "-f"; args[#args + 1] = "rawvideo"
+    -- Write to a per-prepare temp, then publish. Two prepares sharing one output
+    -- path meant the later ffmpeg truncated (-y) the file the earlier one was
+    -- still writing, so the earlier callback stat'd 0 bytes and reported cb(0).
+    local out = casthead.packed.file .. "." .. token .. ".part"
+    args[#args + 1] = out
+    mp.command_native_async({ name = "subprocess", playback_only = false, args = args }, function(ok, res)
+        -- Superseded: say nothing. cb(0) is the caller's "no faces decoded"
+        -- signal and would wrongly restore the card's text cast.
+        if casthead.token ~= token then os.remove(out); return end
+        if not ok or not res or res.status ~= 0 then
+            os.remove(out); msg.warn("casthead pack failed"); return cb(0)
+        end
+        local fi = utils.file_info(out)
+        if not fi or not fi.size or fi.size == 0 then os.remove(out); return cb(0) end
+        os.remove(casthead.packed.file) -- rename won't overwrite on Windows
+        os.rename(out, casthead.packed.file)
+        casthead.packed.face_h = H  -- face height within the row (excludes the shadow band)
+        casthead.packed.h = HP      -- full packed height (faces + shadow band)
+        casthead.packed.w = math.floor(fi.size / (4 * HP))
+        casthead.packed.ready = true
+        msg.verbose(string.format("casthead packed %dx%d (%d faces)", casthead.packed.w, HP, n))
+        cb(n)
+    end)
+end
+
+-- Fetch all picked profiles (persistent w185 cache), preserving cast order, then
+-- build the packed row once every fetch has settled.
+local function casthead_prepare_scroll(picks, token, cb)
+    local files, pending = {}, #picks
+    for i, e in ipairs(picks) do
+        M.fetch_image(e.profile, "w185", "cast", function(f)
+            if casthead.token == token then files[i] = f or false end
+            pending = pending - 1
+            if pending == 0 and casthead.token == token then
+                local ordered, labels = {}, {}
+                for j = 1, #picks do
+                    if files[j] then -- keep the labels in lockstep with the packed faces
+                        ordered[#ordered + 1] = files[j]
+                        labels[#labels + 1] = { name = picks[j].name, role = picks[j].role }
+                    end
+                end
+                casthead.labels = labels
+                casthead_build_packed(ordered, token, cb)
+            end
+        end)
+    end
+end
+
+-- Fetch + decode up to casthead_max cast that HAVE a profile; cb(count_ready) when
+-- the whole batch settles (only fires for the current token). Reuses fetch_image
+-- (persistent w185 cache) + png_decode (square crop, opaque). Orchestrated here so
+-- on_file_loaded stays a single images.* call (LuaJIT 60-upvalue ceiling).
+-- `gen` is main's file generation; it guards main's own callback. Supersession
+-- WITHIN a load needs its own counter — see prepare_seq above.
+function M.casthead_prepare(cast, gen, cb)
+    -- Skip an identical re-request for the same load: main fires fire_casthead
+    -- twice, so a stale cached card asks for the same faces twice. Returning
+    -- without a cb is correct — the live prepare still owns casthead_active and
+    -- its own cb will show the strip or clear it. A different profile set (a
+    -- fresh TMDB cast) still supersedes, and a failed attempt may retry.
+    local sig = {}
+    for _, e in ipairs(cast or {}) do
+        if type(e) == "table" and e.profile and e.profile ~= "" then sig[#sig + 1] = e.profile end
+    end
+    sig = table.concat(sig, "|")
+    if sig ~= "" and gen == last_prep.gen and sig == last_prep.sig
+        and (last_prep.state == "inflight" or last_prep.state == "ok") then
+        return
+    end
+    last_prep.gen, last_prep.sig, last_prep.state = gen, sig, "inflight"
+    prepare_seq = prepare_seq + 1
+    local token = prepare_seq
+    -- Record the outcome so a retry is allowed after a genuine failure; a
+    -- superseded prepare must not stomp the newer one's state.
+    local real_cb = cb
+    cb = function(n)
+        if casthead.token == token then last_prep.state = (n > 0) and "ok" or "fail" end
+        return real_cb(n)
+    end
+    casthead.token = token
+    casthead.heads = {}
+    casthead.labels = nil
+    casthead.packed.ready = false
+    casthead.scroll_idx = 0
+    local scroll = (tostring(opts.casthead_style or "static"):lower() == "scroll")
+    -- scroll shows up to casthead_max faces (0 = all); static is also bounded by the
+    -- overlay-id block, so its cap stays #casthead.ids even when casthead_max is 0.
+    local cap = util.cap_or_all(opts.casthead_max, 5)
+    local nmax = scroll and cap or math.min(#casthead.ids, cap)
+    local picks = {}
+    for _, e in ipairs(cast or {}) do
+        if type(e) == "table" and e.profile and e.profile ~= "" then
+            picks[#picks + 1] = e
+            if #picks >= nmax then break end
+        end
+    end
+    if #picks == 0 then return cb(0) end
+    if scroll then return casthead_prepare_scroll(picks, token, cb) end
+    local pending, ready = #picks, 0
+    for i, e in ipairs(picks) do
+        local head = { file = casthead.base .. i .. ".bgra", ready = false, name = e.name }
+        casthead.heads[i] = head
+        M.fetch_image(e.profile, "w185", "cast", function(f)
+            local function done(ok)
+                if ok and casthead.token == token then head.ready, ready = true, ready + 1 end
+                pending = pending - 1
+                if pending == 0 and casthead.token == token then cb(ready) end
+            end
+            if not f then return done(false) end
+            -- crop the portrait (185x278) to a square biased toward the face, then scale
+            png_decode(head, f, CAST_DECODE_H, done, nil, "crop=iw:iw:0:(ih-iw)/4")
+        end)
+    end
+end
+
+-- Any face ready? (static: a decoded head; scroll: the packed row)
+function M.casthead_ready()
+    if casthead.packed.ready then return true end
+    for _, h in ipairs(casthead.heads) do if h and h.ready then return true end end
+    return false
+end
+
+function M.casthead_hide()
+    M.casthead_scroll_stop()
+    for _, id in ipairs(casthead.ids) do mp.command_native({ "overlay-remove", id }) end
+    if casthead.names_ov then casthead.names_ov:remove() end
+    casthead.shown, casthead.wrap_shown = false, false
+end
+
+-- SCROLL style helpers -----------------------------------------------------
+-- Window geometry (OSD px): top-left, spanning from the left margin to just before
+-- the top-right poster. Sits over the banner (casthead_over_banner, default) or
+-- under it. Returns x0,y0,dh,scale,W_src (the window width in packed-source px).
+-- nil until the OSD is sized and the row is built.
+local function casthead_window()
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 or not casthead.packed.ready then return nil end
+    local sx = ow / RES_X
+    local margin = math.floor(oh * 0.03)
+    local face_h = casthead.packed.face_h or casthead.packed.h
+    local face_disp = math.floor(oh * (tonumber(opts.casthead_height) or 0.19))
+    local scale = face_disp / face_h                    -- faces at casthead_height
+    local dh = math.floor(casthead.packed.h * scale)    -- overlay height = faces + baked shadow band
+    local gap = math.max(4, math.floor(face_disp * 0.16))
+    local x0, y0 = margin, margin
+    if opts.show_banner and banner.ready then
+        if opts.casthead_over_banner then
+            -- inset the strip's top-left corner INTO the banner (down + right) so the
+            -- banner's top edge stays visible as a strip: the inset reveals
+            -- casthead_over_banner_inset of the banner's drawn height (faces are a
+            -- higher overlay id, so they still draw over the rest of the banner)
+            local inset = math.floor(oh * opts.banner_height
+                * (tonumber(opts.casthead_over_banner_inset) or 0.25))
+            x0, y0 = margin + inset, margin + inset
+        else -- sit under the banner when it's shown
+            y0 = margin + math.floor(oh * opts.banner_height) + gap
+        end
+    end
+    -- Span the full CARD width: from the left margin (≈ the card's left edge) to the
+    -- card's RIGHT edge, where the spinning disc sits — so the marquee runs right up
+    -- under the disc (which is drawn on top). Fall back to clearing the top-right
+    -- poster if the card rect isn't known yet.
+    local cr = deps.card_rect and deps.card_rect()
+    local right = cr and math.floor((cr.x + cr.w) * sx) or (ow - 2 * margin) -- card's right edge
+    local pad = math.max(4, math.floor(oh * 0.006))
+    if cr and opts.show_disc and disc.ready and disc.h > 0 then
+        -- the disc is centred on the card's right corner; stop the strip at the disc's
+        -- LEFT side (minus a hair) so the marquee's right border hugs, not runs under it.
+        local disc_dw = disc.w * ((oh * (tonumber(opts.disc_size) or 0.22)) / disc.h)
+        right = math.min(right, math.floor((cr.x + cr.w) * sx - disc_dw / 2 - pad))
+    end
+    if opts.show_poster and poster.ready and (poster.face_h or 0) > 0 then
+        -- also stay clear of the top-right poster (matters when there's no disc to stop at,
+        -- e.g. a TV episode's wide landscape thumb reaching left toward the card). Use the
+        -- FACE dims (not the shadow-padded bitmap) so the strip hugs the poster, not its
+        -- soft shadow.
+        local scale = math.floor(oh * (tonumber(opts.poster_height) or 0.42)) / poster.face_h
+        local cap = math.floor(ow * (tonumber(opts.poster_max_width) or 0))
+        if cap > 0 and math.floor(poster.face_w * scale) > cap then scale = cap / poster.face_w end
+        -- mirror poster_show: face right edge sits oh*0.03 (+ the shadow border) in from
+        -- the right screen edge, so the poster's LEFT edge is that minus the face width.
+        local pl = ow - math.floor(oh * 0.03) - math.floor(POSTER_SHO * scale) - math.floor(poster.face_w * scale)
+        right = math.min(right, pl - pad)
+    end
+    local W_disp = math.max(face_disp, right - x0)
+    return x0, y0, dh, scale, math.max(1, math.floor(W_disp / scale))
+end
+
+-- Draw the marquee: a W_src-wide vertical slice of the packed row at byte offset o
+-- (o grows → content glides right→left). If the row fits the window it draws once
+-- (no scroll). At the wrap seam a 2nd overlay fills the tail from the row start
+-- (a single overlay-add read can't cross a row end).
+-- Aligned name/role labels UNDER the scrolling faces: one two-line label per face,
+-- shifted by the SAME source offset o so each name stays locked under its actor. On the
+-- names_ov osd-overlay (z=50), clipped to the window so labels don't spill past the disc
+-- or the left margin. Rebuilt every tick alongside the faces. (osd text draws below image
+-- overlays, so a label only hides behind the clearlogo if a tall card rises into the
+-- strip — same caveat as the static strip's labels.)
+local function casthead_labels_draw(x0, y0, scale, o, W_disp)
+    local labels = casthead.labels
+    if not (labels and #labels > 0) then
+        if casthead.names_ov then casthead.names_ov.data = ""; casthead.names_ov:update() end
+        return
+    end
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 then return end
+    local sx, sy = ow / RES_X, oh / RES_Y
+    local n, pw = #labels, casthead.packed.w
+    local cell = pw / n              -- source cell width (face + gap)
+    local fh = casthead.packed.face_h
+    local ly = y0 + math.floor(fh * scale) + math.max(2, math.floor(oh * 0.006)) -- just under the faces
+    local fs = 16
+    local wv = (cell * scale) / sx  -- label width in the 1280x720 virtual space
+    local right = x0 + W_disp
+    local clip = string.format("\\clip(%d,%d,%d,%d)",
+        math.floor(x0 / sx), 0, math.ceil(right / sx), math.ceil(oh / sy))
+    local ev = {}
+    -- k=1 is the wrapped 2nd copy for the scroll seam; only emit it when the strip
+    -- actually SCROLLS. When it fits (static), the wider window would otherwise place
+    -- wrapped name copies past the faces → "empty boxes with names".
+    local kmax = (casthead.packed.w * scale > W_disp) and 1 or 0
+    for i = 1, n do
+        local center = (i - 1) * cell + fh / 2 -- face centre in source px
+        for k = 0, kmax do
+            local dx = x0 + (center - o + k * pw) * scale
+            -- label a face only while its CENTRE is inside the window, so a name never
+            -- floats past its face onto the poster/disc at the wrap seam (the \clip below
+            -- still trims a label that straddles an edge).
+            if dx >= x0 and dx <= right then
+                local L = labels[i]
+                local function e(t) return util.ass_escape(util.ellipsize_px(t, wv, fs, "-", true)) end
+                -- name on ONE line (ellipsised to the cell), then the role on a
+                -- 2nd, dimmer line (no parens). Truncation marker is "-".
+                local txt = e(L.name or "")
+                if L.role and L.role ~= "" then
+                    txt = txt .. "\\N{\\1c&HC8C8C8&}" .. e(L.role)
+                end
+                ev[#ev + 1] = string.format(
+                    "{\\an8%s\\pos(%d,%d)\\bord2\\shad1\\3c&H000000&\\1c&HFFFFFF&\\fs%d\\b1}%s",
+                    clip, math.floor(dx / sx), math.floor(ly / sy), fs, txt)
+            end
+        end
+    end
+    if not casthead.names_ov then casthead.names_ov = mp.create_osd_overlay("ass-events") end
+    casthead.names_ov.res_x, casthead.names_ov.res_y = RES_X, RES_Y
+    casthead.names_ov.z = 50
+    casthead.names_ov.data = table.concat(ev, "\n")
+    casthead.names_ov:update()
+end
+
+local function casthead_scroll_draw()
+    local x0, y0, dh, scale, W_src = casthead_window()
+    if not x0 then return end
+    local pw, ph = casthead.packed.w, casthead.packed.h
+    -- overlay-add REPLACES an existing id in place (atomically), same as the spinning
+    -- disc. Do NOT overlay-remove then re-add the SAME id each tick — the 1-frame gap
+    -- between the two gets composited on macOS and reads as a dark strobe (~1/s, a beat
+    -- against the refresh). id 6 is redrawn in place; id 7 (wrap tail) is only removed
+    -- when we leave the seam.
+    local function put(id, off, w, dx)
+        mp.command_native({ name = "overlay-add", id = id, x = dx, y = y0,
+            file = casthead.packed.file, offset = off * 4, fmt = "bgra",
+            w = w, h = ph, stride = pw * 4, dw = math.floor(w * scale), dh = dh })
+    end
+    local o = 0
+    if pw > W_src then -- doesn't fit → scroll
+        local px = math.max(1, tonumber(opts.cast_scroll_px) or 3)
+        o = math.floor((casthead.scroll_idx * (px / scale)) % pw)
+        local w1 = math.min(W_src, pw - o)
+        put(casthead.ids[1], o, w1, x0)
+        if w1 < W_src then -- wrap seam: fill the tail from the start of the row
+            put(casthead.ids[2], 0, W_src - w1, x0 + math.floor(w1 * scale))
+            casthead.wrap_shown = true
+        elseif casthead.wrap_shown then
+            mp.command_native({ "overlay-remove", casthead.ids[2] }); casthead.wrap_shown = false
+        end
+    else -- everything fits → one static overlay
+        put(casthead.ids[1], 0, pw, x0)
+        if casthead.wrap_shown then
+            mp.command_native({ "overlay-remove", casthead.ids[2] }); casthead.wrap_shown = false
+        end
+    end
+    casthead_labels_draw(x0, y0, scale, o, math.floor(W_src * scale))
+    casthead.shown = true
+end
+
+function M.casthead_scroll_stop()
+    if casthead.scroll_timer then casthead.scroll_timer:kill(); casthead.scroll_timer = nil end
+end
+
+function M.casthead_scroll_start()
+    M.casthead_scroll_stop()
+    local iv = tonumber(opts.cast_scroll_interval) or 0.1
+    if iv <= 0 then return end -- timer-driven (like the cast marquee) → glides while paused too
+    casthead.scroll_timer = mp.add_periodic_timer(iv, function()
+        if not deps.visible() then return end
+        casthead.scroll_idx = casthead.scroll_idx + 1
+        casthead_scroll_draw()
+    end)
+end
+
+-- Show the scrolling faces marquee: draw the first window, then run the timer only
+-- when the row is wider than the window (else it's a clean static row).
+function M.casthead_scroll_show()
+    if not casthead.packed.ready then return end
+    casthead_scroll_draw()
+    local x0, _, _, _, W_src = casthead_window()
+    if x0 and casthead.packed.w > W_src then M.casthead_scroll_start() else M.casthead_scroll_stop() end
+end
+
+-- STATIC style: draw the ready heads left→right, top-left; over the banner
+-- (casthead_over_banner, default) or under it if present; cap the row to ~42% of
+-- the width so it clears the top-right poster.
+-- Names go on a 2nd osd-overlay in the 1280x720 virtual space (head OSD-px → /sx,/sy).
+function M.casthead_show()
+    if not opts.cast_headshots then return end
+    -- pause-only (default): the strip shows only while playback is PAUSED; hidden while
+    -- playing. The strip replaces the card's text cast either way (the card omits the cast
+    -- while playing), so only the OVERLAY toggles. casthead_hide preserves the marquee
+    -- offset (casthead.scroll_idx), so the next pause resumes from where it froze.
+    if opts.casthead_pause_only and not mp.get_property_bool("pause") then return end
+    if tostring(opts.casthead_style or "static"):lower() == "scroll" then
+        return M.casthead_scroll_show()
+    end
+    local ow, oh = mp.get_osd_size()
+    if not ow or ow == 0 or not oh or oh == 0 then return end
+    local heads = {}
+    for i = 1, #casthead.heads do
+        local h = casthead.heads[i]
+        if h and h.ready then heads[#heads + 1] = h end
+    end
+    M.casthead_hide()
+    if #heads == 0 then return end
+    local sx, sy = ow / RES_X, oh / RES_Y
+    local margin = math.floor(oh * 0.03)
+    local dh = math.floor(oh * (tonumber(opts.casthead_height) or 0.19))
+    local gap = math.max(4, math.floor(dh * 0.16))
+    local x0, y0 = margin, margin
+    if opts.show_banner and banner.ready then
+        if opts.casthead_over_banner then
+            -- inset the strip's top-left corner INTO the banner (down + right) so the
+            -- banner's top edge stays visible as a strip (see casthead_window)
+            local inset = math.floor(oh * opts.banner_height
+                * (tonumber(opts.casthead_over_banner_inset) or 0.25))
+            x0, y0 = margin + inset, margin + inset
+        else -- sit under the banner when it's shown
+            y0 = margin + math.floor(oh * opts.banner_height) + gap
+        end
+    end
+    local maxw = math.floor(ow * 0.42) -- keep clear of the top-right poster
+    local x, drawn, events = x0, 0, {}
+    for _, h in ipairs(heads) do
+        local dw = math.floor(h.w * (dh / h.h)) -- square → dw == dh
+        if drawn > 0 and (x + dw - x0) > maxw then break end -- no room; stop the row
+        mp.command_native({ name = "overlay-add", id = casthead.ids[drawn + 1], x = x, y = y0,
+            file = h.file, offset = 0, fmt = "bgra",
+            w = h.w, h = h.h, stride = h.w * 4, dw = dw, dh = dh })
+        -- soft drop shadow behind the head: image overlays draw ABOVE this ASS
+        -- overlay, so a dark rect offset down-right + blurred peeks out as a shadow
+        -- (same trick as the card box). Virtual coords (÷ sx,sy).
+        local shO = math.max(2, math.floor(dh * 0.045))
+        events[#events + 1] = string.format(
+            "{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H000000&\\1a&H80&\\blur4\\p1}%s{\\p0}",
+            math.floor((x + shO) / sx), math.floor((y0 + shO) / sy),
+            util.rrect(math.floor(dw / sx), math.floor(dh / sy), 4))
+        if h.name and h.name ~= "" then -- name label centred under the head (virtual coords)
+            local cxv = (x + dw / 2) / sx
+            local yv = (y0 + dh + math.floor(oh * 0.008)) / sy
+            local wv = dw / sx
+            -- name on one line, ellipsised to the head width.
+            local function esc(t) return util.ass_escape(util.ellipsize_px(t, wv, 16, nil, true)) end
+            local label = esc(h.name)
+            events[#events + 1] = string.format(
+                "{\\an8\\pos(%d,%d)\\bord2\\shad1\\3c&H000000&\\1c&HFFFFFF&\\fs16\\b1}%s",
+                math.floor(cxv), math.floor(yv), label)
+        end
+        drawn, x = drawn + 1, x + dw + gap
+    end
+    casthead.shown = drawn > 0
+    if #events > 0 then
+        if not casthead.names_ov then casthead.names_ov = mp.create_osd_overlay("ass-events") end
+        casthead.names_ov.res_x, casthead.names_ov.res_y = RES_X, RES_Y
+        -- Draw ABOVE the card overlay (default z=0). On a wider-than-16:9 window the
+        -- tall card's top can rise into the top-left strip; with equal z the render
+        -- order is platform-dependent (macOS drew the card over the names → "behind").
+        casthead.names_ov.z = 50
+        casthead.names_ov.data = table.concat(events, "\n")
+        casthead.names_ov:update()
+    end
+end
+
+return M

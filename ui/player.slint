@@ -108,6 +108,11 @@ export component Player inherits Rectangle {
     callback select_subtitle_track(int);
     callback change_speed(float);
     callback open_file();
+    // Toggles the spincard info card mpv draws into the video frame;
+    // `lean` picks the trimmed variant (see script-opts/spincard.conf).
+    callback toggle_info_card(bool);
+    // GPU decode toggle; reports the decoder mpv actually picked on the OSD.
+    callback toggle_hwdec();
 
     callback next();
     callback previous();
@@ -141,6 +146,12 @@ export component Player inherits Rectangle {
                 accept
             } else if (event.text == "o" && event.modifiers.control) {
                 root.open_file();
+                accept
+            } else if (event.text == "c") {
+                root.toggle_info_card(false);
+                accept
+            } else if (event.text == "C") {
+                root.toggle_info_card(true);
                 accept
             } else {
                 reject
@@ -463,10 +474,24 @@ export component Player inherits Rectangle {
                     }
                 }
 
-                // Right: Speed Selector
+                // Right: Info card + Speed Selector
                 HorizontalLayout {
                     spacing: 12px;
                     alignment: end;
+
+                    // Info card (spincard) - also on "c", lean card on "C".
+                    RoundPlayerButton {
+                        text: "i";
+                        font-size: 18px;
+                        clicked => { root.toggle_info_card(false); }
+                    }
+
+                    // Hardware decoding on/off; the result shows on mpv's OSD.
+                    RoundPlayerButton {
+                        text: "GPU";
+                        font-size: 11px;
+                        clicked => { root.toggle_hwdec(); }
+                    }
 
                     SpeedSelector {
                         label: "Speed:";

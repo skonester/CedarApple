@@ -16,6 +16,8 @@ export component AppWindow inherits Window {
     callback select_subtitle_track(int);
     callback change_speed(float);
     callback open_file();
+    callback toggle_info_card(bool);
+    callback toggle_hwdec();
 
     callback next();
     callback previous();
@@ -80,6 +82,8 @@ export component AppWindow inherits Window {
         select_subtitle_track(idx) => select_subtitle_track(idx);
         change_speed(s) => root.change_speed(s);
         open_file => root.open_file();
+        toggle_info_card(lean) => root.toggle_info_card(lean);
+        toggle_hwdec => root.toggle_hwdec();
     }
 
     // Loading Overlay

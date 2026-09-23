@@ -87,8 +87,6 @@ Needs Rust (via [rustup](https://rustup.rs/)) and `libmpv`:
 cargo run --release
 ```
 
-Ctrl+O (or the Open button) picks a file to play.
-
 ## What's here / not here
 
 It's just the player - no library browser, no accounts, no scrobbling. Two bigger pieces
