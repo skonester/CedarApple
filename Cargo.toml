@@ -6,14 +6,14 @@ edition = "2024"
 authors = ["tfo-dot"]
 description = "A player for the brave"
 repository = "https://github.com/amp-dot/amp"
-license = "MIT OR GPL-3.0-only"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 libmpv-sys = "3.1.0"
 slint = { version = "1.17.1", default-features = false, features = ["backend-winit", "renderer-femtovg", "compat-1-2"] }
 glow = "0.17.0"
 libc = "0.2.189"
-reqwest = { version = "0.13.5", features = ["json", "blocking"] }
+reqwest = { version = "0.13.5", features = ["json", "blocking", "socks"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 image = "0.25.10"
@@ -32,12 +32,42 @@ tokio-tungstenite = "0.26.2"
 url = "2.5.8"
 rfd = "0.17.2"
 
+# Torrent streaming, ported from Frame Player (src/torrent.rs). librqbit is the
+# stable 9.x line with `disable-upload`, which is what makes "seeding off" a
+# runtime flag at all; hyper serves the loopback URL mpv opens. See
+# vendor/README-librqbit.md for why three librqbit crates are vendored.
+librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls", "disable-upload"] }
+anyhow = "1"
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
+futures-util = { version = "0.3", default-features = false }
+rand = "0.9"
+
 [build-dependencies]
 slint-build = "1.17.1"
 
 [profile.release]
 codegen-units = 1
 lto = true
+
+[target.'cfg(windows)'.dependencies]
+# net_route (the adapter list) and torrent_storage (sparse files on NTFS).
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
+[patch.crates-io]
+librqbit = { path = "vendor/librqbit" }
+librqbit-dht = { path = "vendor/librqbit-dht" }
+librqbit-dualstack-sockets = { path = "vendor/librqbit-dualstack-sockets" }
 
 [patch."https://github.com/tfo-dot/parts-rs.git"]
 parts = { path = "vendor/parts-rs" }

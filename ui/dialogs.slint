@@ -1,0 +1,273 @@
+// The link box and the "What to watch" list. Ported from Frame Player's
+// LinkDialog.svelte, TorrentPickDialog.svelte and Dialog.svelte (markup and
+// CSS; strings are its English ones), GPL-3.0-or-later, Copyright (c) Evgenii
+// Zakharov.
+
+import { Theme } from "./theme.slint";
+import { StrokeIcon, Ic } from "./icons.slint";
+import { PickFile } from "./types.slint";
+import { Spinner } from "std-widgets.slint";
+
+// The sheet every dialog sits on: a dimmed backdrop, a panel, a title and ×.
+component DialogFrame inherits Rectangle {
+    in property <string> title;
+    in property <length> panel-width: 520px;
+    in property <length> body-height;
+    callback close();
+
+    background: #00000073;
+
+    // The backdrop closes; the panel swallows its own clicks.
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    panel := Rectangle {
+        width: Math.min(root.panel-width, root.width - 48px);
+        height: Math.min(root.body-height + 62px, root.height - 112px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.dialog-bg;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: #ffffff17;
+        clip: true;
+
+        TouchArea { }
+
+        Text {
+            x: 18px;
+            y: 16px;
+            width: parent.width - 70px;
+            text: root.title;
+            color: Theme.text;
+            font-size: 15px;
+            font-weight: 600;
+            overflow: elide;
+        }
+        Rectangle {
+            x: parent.width - 42px;
+            y: 10px;
+            width: 28px;
+            height: 28px;
+            border-radius: 14px;
+            background: x-touch.has-hover ? #ffffff1f : transparent;
+            StrokeIcon {
+                x: 9px;
+                y: 9px;
+                data: Ic.cross;
+                viewbox: 10;
+                size: 10px;
+                stroke-width: 1.4px;
+                color: Theme.text-dim;
+            }
+            x-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+        }
+
+        Rectangle {
+            x: 18px;
+            y: 46px;
+            width: parent.width - 36px;
+            height: parent.height - 62px;
+            @children
+        }
+    }
+}
+
+component DialogButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 34px;
+    width: label.preferred-width + 32px;
+    border-radius: 8px;
+    background: !root.primary ? (touch.has-hover ? #ffffff14 : transparent)
+        : (!root.enabled ? #6366f166 : (touch.has-hover ? Theme.accent : Theme.accent-strong));
+    label := Text {
+        text: root.text;
+        color: root.primary ? white : Theme.text-soft;
+        font-size: 13px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component LinkDialog inherits Rectangle {
+    in-out property <string> text;
+    in property <string> error;
+    // The torrent is being resolved: the file list comes from peers.
+    in property <bool> busy;
+    callback submit(string);
+    callback pick-torrent-file();
+    callback close();
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    DialogFrame {
+        title: "Link or torrent";
+        body-height: 150px + (root.error != "" ? 34px : 0px) + (root.busy ? 34px : 0px);
+        close => { root.close(); }
+
+        VerticalLayout {
+            spacing: 8px;
+            Rectangle {
+                height: 40px;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: input.has-focus ? Theme.accent-strong : #ffffff24;
+                background: #ffffff0f;
+                if root.text == "" : Text {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text: "https://…  ·  magnet:?xt=…  ·  a .torrent file";
+                    color: Theme.muted;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+                input := TextInput {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text <=> root.text;
+                    color: Theme.text;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    single-line: true;
+                    enabled: !root.busy;
+                    accepted => {
+                        if (root.text != "" && !root.busy) {
+                            root.submit(root.text);
+                        }
+                    }
+                }
+            }
+            if root.error != "" : Text {
+                text: root.error;
+                color: Theme.error;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            if root.busy : HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Spinner { indeterminate: true; width: 14px; height: 14px; }
+                VerticalLayout {
+                    Text { text: "Finding the torrent…"; color: Theme.text-soft; font-size: 12.5px; }
+                    Text {
+                        text: "The file list comes from other peers, which can take up to a minute and a half.";
+                        color: Theme.muted;
+                        font-size: 11.5px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            Text {
+                text: "A magnet link or a .torrent streams while it downloads — only the file you watch is fetched. Anything else is handed to mpv as it is.";
+                color: Theme.muted;
+                font-size: 11.5px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 14px;
+                padding-top: 4px;
+                DialogButton {
+                    text: ".torrent file…";
+                    enabled: !root.busy;
+                    clicked => { root.pick-torrent-file(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                DialogButton {
+                    text: "Open";
+                    primary: true;
+                    enabled: root.text != "" && !root.busy;
+                    clicked => { root.submit(root.text); }
+                }
+            }
+        }
+    }
+}
+
+export component PickDialog inherits Rectangle {
+    in property <string> title;
+    in property <[PickFile]> files;
+    callback pick(int);
+    callback close();
+
+    DialogFrame {
+        title: root.title;
+        panel-width: 560px;
+        body-height: 28px + Math.min(list.preferred-height, 360px);
+        close => { root.close(); }
+
+        VerticalLayout {
+            spacing: 10px;
+            Text {
+                text: "The rest go in the queue — only the one playing is downloaded.";
+                color: Theme.muted;
+                font-size: 11.5px;
+            }
+            Flickable {
+                viewport-height: list.preferred-height;
+                list := VerticalLayout {
+                    spacing: 2px;
+                    for f in root.files : Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: touch.has-hover ? Theme.menu-hover : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 12px;
+                            if f.done : VerticalLayout {
+                                alignment: center;
+                                StrokeIcon { data: Ic.tick; viewbox: 12; size: 12px; stroke-width: 1.6px; color: #6f6f7a; }
+                            }
+                            Text {
+                                text: f.name;
+                                // Started reads brighter, finished quieter: the
+                                // list has three states and the eye should sort
+                                // them without reading a word.
+                                color: f.done ? #8a8a95 : (f.started ? #ffffff : Theme.text-soft);
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            if f.left != "" : Text {
+                                text: f.left;
+                                color: Theme.accent;
+                                font-size: 11.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: f.size;
+                                color: #8a8a95;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.pick(f.index); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

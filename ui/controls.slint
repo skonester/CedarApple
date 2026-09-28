@@ -1,0 +1,358 @@
+// The control bar: the seekbar with its timecodes, and the row of buttons under
+// it. Ported from Frame Player's Controls.svelte and SeekBar.svelte (markup and
+// CSS) and the drag half of seek.svelte.ts, GPL-3.0-or-later, Copyright (c)
+// Evgenii Zakharov. What a drag *does* to playback is Rust's (src/scrub.rs);
+// this file owns what the bar shows while the pointer holds it.
+
+import { Theme, Fmt, Tip } from "./theme.slint";
+import { AppIcon, Ic } from "./icons.slint";
+import { TrackInfo, ChapterInfo, QueueEntry, Band } from "./types.slint";
+
+// A button of the control row: 36x34, glyph 20px, indigo when on.
+export component CtlButton inherits Rectangle {
+    in property <string> icon;
+    // A second path drawn over the first (the "1" of repeat-one).
+    in property <string> icon-extra;
+    in property <length> icon-size: 20px;
+    in property <bool> enabled: true;
+    in property <bool> active: false;
+    in property <string> tip;
+    in property <int> tip-align: 0;
+    // Below the button rather than above, for the top bar.
+    in property <bool> tip-below: false;
+    callback clicked();
+
+    width: 36px;
+    height: 34px;
+    border-radius: 8px;
+    background: touch.has-hover && root.enabled ? Theme.hover : transparent;
+
+    property <color> glyph: !root.enabled ? Theme.disabled : (root.active ? Theme.accent : Theme.text);
+
+    AppIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        data: root.icon;
+        size: root.icon-size;
+        color: root.glyph;
+    }
+    if root.icon-extra != "" : AppIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        data: root.icon-extra;
+        size: root.icon-size;
+        color: root.glyph;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+
+    Tip {
+        text: root.tip;
+        show: touch.has-hover;
+        align: root.tip-align;
+        anchor-width: root.width;
+        y: root.tip-below ? root.height + 8px : -self.height - 8px;
+    }
+}
+
+// Frame Player's range input: 4px track, white fill, 12px thumb that grows
+// under the pointer.
+export component VolumeBar inherits Rectangle {
+    in property <float> value;
+    in property <float> maximum: 100;
+    in property <string> tip;
+    callback changed(float);
+
+    width: 90px;
+    height: 20px;
+
+    property <float> frac: Math.max(0, Math.min(1, root.value / root.maximum));
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.track;
+        Rectangle {
+            x: 0;
+            width: parent.width * root.frac;
+            border-radius: 2px;
+            background: white;
+        }
+    }
+    Rectangle {
+        property <length> d: touch.has-hover || touch.pressed ? 15px : 12px;
+        width: self.d;
+        height: self.d;
+        border-radius: self.d / 2;
+        x: (parent.width - 12px) * root.frac + 6px - self.d / 2;
+        y: (parent.height - self.height) / 2;
+        background: white;
+        animate width, height { duration: 120ms; }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(evt) => {
+            if (evt.kind == PointerEventKind.down || (evt.kind == PointerEventKind.move && self.pressed)) {
+                root.changed(Math.round(Math.max(0, Math.min(1, self.mouse-x / root.width)) * root.maximum));
+            }
+        }
+        scroll-event(evt) => {
+            root.changed(Math.max(0, Math.min(root.maximum, root.value + (evt.delta-y > 0 ? 5 : -5))));
+            accept
+        }
+    }
+
+    Tip {
+        text: root.tip;
+        show: touch.has-hover && !touch.pressed;
+        anchor-width: root.width;
+    }
+}
+
+// The seekbar: timecodes above (elapsed left, total right), the bar below.
+export component SeekBar inherits VerticalLayout {
+    in property <float> position;
+    in property <float> duration;
+    in property <[Band]> buffered;
+    in property <[ChapterInfo]> chapters;
+    in property <string> hover-chapter;
+    in property <string> right-note;
+    out property <bool> dragging: false;
+
+    callback scrub-begin(float);
+    callback scrub-move(float);
+    callback scrub-end(float);
+    callback scrub-cancel();
+    callback hovered(float);
+
+    property <float> drag-value;
+    property <float> shown: root.dragging ? root.drag-value : root.position;
+    property <float> frac: root.duration > 0 ? Math.max(0, Math.min(1, root.shown / root.duration)) : 0;
+
+    spacing: 0px;
+
+    HorizontalLayout {
+        Text {
+            text: Fmt.time(root.shown);
+            color: Theme.text-time;
+            font-size: 12px;
+            horizontal-stretch: 1;
+        }
+        if root.right-note != "" : Text {
+            text: root.right-note + "  ·  ";
+            color: Theme.text-dim;
+            font-size: 12px;
+        }
+        Text {
+            text: Fmt.time(root.duration);
+            color: Theme.text-time;
+            font-size: 12px;
+        }
+    }
+
+    wrap := Rectangle {
+        // margin-top 6 + padding 6 above and below the 4px track.
+        height: 22px;
+
+        track := Rectangle {
+            y: 12px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.track;
+
+            // What is on disk, UNDER the played fill: for a torrent the bar's
+            // question is "will a jump there land, or wait".
+            for band in root.buffered : Rectangle {
+                x: parent.width * band.from;
+                width: parent.width * Math.max(0, band.to - band.from);
+                border-radius: 2px;
+                background: Theme.buffered;
+            }
+            Rectangle {
+                x: 0;
+                width: parent.width * root.frac;
+                border-radius: 2px;
+                background: white;
+            }
+            // Chapter boundaries: a notch through fill and track alike.
+            for ch in root.chapters : Rectangle {
+                visible: root.duration > 0 && ch.time > 0;
+                x: parent.width * ch.time / Math.max(0.001, root.duration) - 1px;
+                width: 2px;
+                border-radius: 1px;
+                background: #101016e6;
+            }
+        }
+
+        Rectangle {
+            property <length> d: touch.has-hover || root.dragging ? 15.6px : 12px;
+            width: self.d;
+            height: self.d;
+            border-radius: self.d / 2;
+            x: track.width * root.frac - self.d / 2;
+            y: track.y + track.height / 2 - self.d / 2;
+            background: white;
+            animate width, height { duration: 120ms; }
+        }
+
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            property <float> at: root.duration * Math.max(0, Math.min(1, self.mouse-x / self.width));
+            pointer-event(evt) => {
+                if (root.duration <= 0) {
+                    return;
+                }
+                if (evt.kind == PointerEventKind.down && evt.button == PointerEventButton.left) {
+                    root.dragging = true;
+                    root.drag-value = self.at;
+                    root.scrub-begin(self.at);
+                } else if (evt.kind == PointerEventKind.move) {
+                    root.hovered(self.at);
+                    if (root.dragging) {
+                        root.drag-value = self.at;
+                        root.scrub-move(self.at);
+                    }
+                } else if (evt.kind == PointerEventKind.up && root.dragging) {
+                    root.drag-value = self.at;
+                    root.dragging = false;
+                    root.scrub-end(self.at);
+                } else if (evt.kind == PointerEventKind.cancel && root.dragging) {
+                    root.dragging = false;
+                    root.scrub-cancel();
+                }
+            }
+        }
+
+        // No container, as in Frame Player: a timestamp straight over the video,
+        // with a shadow so it reads on any picture.
+        if (touch.has-hover || root.dragging) && root.duration > 0 : Rectangle {
+            property <float> t: root.dragging ? root.drag-value : touch.at;
+            property <length> w: Math.max(60px, chap.preferred-width + 8px);
+            width: self.w;
+            height: root.hover-chapter != "" ? 34px : 18px;
+            x: Math.max(0px, Math.min(parent.width - self.w, touch.mouse-x - self.w / 2));
+            y: -self.height - 8px;
+
+            Text {
+                x: 1px;
+                y: 1px;
+                width: parent.width;
+                text: Fmt.time(parent.t);
+                color: #000000b3;
+                font-size: 13px;
+                horizontal-alignment: center;
+            }
+            Text {
+                y: 0;
+                width: parent.width;
+                text: Fmt.time(parent.t);
+                color: white;
+                font-size: 13px;
+                horizontal-alignment: center;
+            }
+            chap := Text {
+                y: 17px;
+                width: Math.min(self.preferred-width, 240px);
+                x: (parent.width - self.width) / 2;
+                visible: root.hover-chapter != "";
+                text: root.hover-chapter;
+                color: Theme.text-soft;
+                font-size: 12px;
+                overflow: elide;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
+// One row of an OSC menu.
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <string> note;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 32px;
+    border-radius: 6px;
+    background: touch.has-hover && root.enabled ? Theme.menu-hover : transparent;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+        Text {
+            text: root.text;
+            color: !root.enabled ? Theme.disabled : (root.selected ? Theme.accent : Theme.text-soft);
+            font-weight: root.selected ? 600 : 400;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.note != "" : Text {
+            text: root.note;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component MenuTitle inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: 10px;
+    height: 26px;
+    Text {
+        text: root.text;
+        color: Theme.menu-title;
+        font-size: 11px;
+        letter-spacing: 0.9px;
+        vertical-alignment: center;
+    }
+}
+
+// The panel an OSC menu lives in: right edge on the window's edge line,
+// sized to its rows up to a ceiling, scrolling past it.
+export component MenuPanel inherits Rectangle {
+    in property <length> content-height;
+    in property <length> limit: 300px;
+
+    width: 300px;
+    height: Math.min(root.content-height + 12px, root.limit);
+    background: Theme.menu-bg;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.surface-border;
+    clip: true;
+
+    // Clicks inside must not reach the "click outside closes it" layer.
+    TouchArea { }
+
+    Flickable {
+        x: 6px;
+        y: 6px;
+        width: parent.width - 12px;
+        height: parent.height - 12px;
+        viewport-height: root.content-height;
+        @children
+    }
+}

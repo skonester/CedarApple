@@ -1,0 +1,90 @@
+// Colours, taken from Frame Player's stylesheet (app.css, Controls.svelte,
+// SeekBar.svelte, TopBar.svelte), GPL-3.0-or-later, Copyright (c) Evgenii
+// Zakharov. The rule they follow there holds here too: white reports a value
+// (the seek fill, the volume fill), indigo means on/selected/primary.
+
+export global Theme {
+    out property <color> accent: #818cf8;
+    out property <color> accent-strong: #6366f1;
+
+    out property <color> text: #e8e8ec;
+    out property <color> text-soft: #d6d6de;
+    out property <color> text-time: #e0e0e6;
+    out property <color> text-dim: #b9b9c3;
+    out property <color> muted: #77777f;
+    out property <color> menu-title: #9a9aa5;
+    out property <color> disabled: #6a6a74;
+    out property <color> error: #f0a0a0;
+
+    // rgba(255,255,255,.12): a control under the pointer.
+    out property <color> hover: #ffffff1f;
+    // rgba(255,255,255,.09): a menu row under the pointer.
+    out property <color> menu-hover: #ffffff17;
+
+    // Floating surfaces: menus rgba(16,16,22,.94), OSD .96, dialogs .97.
+    out property <color> menu-bg: #101016f0;
+    out property <color> osd-bg: #101016f5;
+    out property <color> dialog-bg: #101016f7;
+    out property <color> surface-border: #ffffff14;
+
+    // The seekbar: track .28, what is on disk .30, played white.
+    out property <color> track: #ffffff47;
+    out property <color> buffered: #ffffff4d;
+
+    out property <length> edge: 20px;
+}
+
+// `m:ss`, or `h:mm:ss` from an hour up — Frame Player's formatTime.
+export global Fmt {
+    public pure function time(t: float) -> string {
+        let s = Math.max(0, Math.floor(t));
+        let h = Math.floor(s / 3600);
+        let m = Math.floor(Math.mod(s, 3600) / 60);
+        let sec = Math.mod(s, 60);
+        let ss = (sec < 10 ? "0" : "") + sec;
+        if (h > 0) {
+            return h + ":" + (m < 10 ? "0" : "") + m + ":" + ss;
+        }
+        return m + ":" + ss;
+    }
+}
+
+// A hover tooltip: appears after a short rest, leaves at once.
+export component Tip inherits Rectangle {
+    in property <string> text;
+    in property <bool> show;
+    // -1: left edge on the anchor's left, 0: centered, 1: right edge on its right.
+    in property <int> align: 0;
+    in property <length> anchor-width;
+
+    width: label.preferred-width + 16px;
+    height: 24px;
+    x: align == 0 ? (anchor-width - self.width) / 2 : (align < 0 ? 0 : anchor-width - self.width);
+    y: -self.height - 8px;
+    background: Theme.osd-bg;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.surface-border;
+    opacity: 0;
+    visible: text != "";
+
+    label := Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 12px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+
+    states [
+        shown when root.show : {
+            opacity: 1;
+            in {
+                animate opacity { delay: 450ms; duration: 100ms; }
+            }
+            out {
+                animate opacity { duration: 60ms; }
+            }
+        }
+    ]
+}

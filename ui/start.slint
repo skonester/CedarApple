@@ -1,0 +1,314 @@
+// What the window shows before anything is playing: the two ways in (a file,
+// or a link — a magnet, a .torrent, or any URL mpv can open), and the torrents
+// already on this disk, which is how a season is reopened without its magnet.
+//
+// Ported from Frame Player's StartScreen.svelte (markup and CSS), GPL-3.0-or-
+// later, Copyright (c) Evgenii Zakharov. What is CedarApple's own is the
+// background art behind it.
+
+import { Theme, Tip } from "./theme.slint";
+import { StrokeIcon, Ic } from "./icons.slint";
+import { TorrentRowData } from "./types.slint";
+import { Spinner } from "std-widgets.slint";
+
+component PrimaryButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 40px;
+    width: label.preferred-width + 44px;
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.accent : Theme.accent-strong;
+    label := Text {
+        text: root.text;
+        color: white;
+        font-size: 15px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component OutlineButton inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    callback clicked();
+    height: 40px;
+    width: label.preferred-width + 40px + (root.icon != "" ? 22px : 0px);
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: touch.has-hover ? #ffffff4d : #ffffff2e;
+    background: touch.has-hover ? #ffffff0d : transparent;
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        if root.icon != "" : VerticalLayout {
+            alignment: center;
+            StrokeIcon { data: root.icon; viewbox: 24; size: 14px; stroke-width: 1.8px; color: Theme.text-soft; }
+        }
+        label := Text {
+            text: root.text;
+            color: Theme.text-soft;
+            font-size: 15px;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The small round action at the end of a torrent row.
+component RowAction inherits Rectangle {
+    in property <string> icon;
+    in property <float> viewbox: 16;
+    in property <length> icon-size: 14px;
+    in property <bool> enabled: true;
+    in property <bool> open;
+    in property <string> tip;
+    callback clicked();
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: (touch.has-hover && root.enabled) || root.open ? #ffffff24 : transparent;
+    StrokeIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        data: root.icon;
+        viewbox: root.viewbox;
+        size: root.icon-size;
+        stroke-width: 1.4px;
+        color: root.enabled ? Theme.text-dim : Theme.disabled;
+    }
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    Tip {
+        text: root.tip;
+        show: touch.has-hover;
+        align: 1;
+        anchor-width: root.width;
+    }
+}
+
+// A small choice inside a row.
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    callback clicked();
+    height: 20px;
+    width: label.preferred-width + 16px;
+    border-radius: 10px;
+    background: touch.has-hover ? (root.danger ? #f0a0a033 : #ffffff24) : #ffffff12;
+    label := Text {
+        text: root.text;
+        color: root.danger ? Theme.error : Theme.text-soft;
+        font-size: 11.5px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component StartScreen inherits Rectangle {
+    in property <[TorrentRowData]> torrent-rows;
+    in property <string> torrents-total;
+    // The folder of the row being opened, which answers the click at once.
+    in property <string> row-opening;
+
+    callback open-file();
+    callback open-link();
+    callback open-torrent(string);
+    callback reveal-torrent(string);
+    // (folder, watched only)
+    callback delete-torrent(string, bool);
+
+    // The row whose "delete what?" menu is up.
+    property <string> delete-for;
+
+    background: #0b0b0b;
+    clip: true;
+
+    Image {
+        source: @image-url("../images/CedarApple.png");
+        width: 100%;
+        height: 100%;
+        image-fit: cover;
+    }
+    Rectangle {
+        background: #000000b8;
+    }
+
+    // Clicking anywhere else closes the delete menu.
+    if root.delete-for != "" : TouchArea {
+        clicked => { root.delete-for = ""; }
+    }
+
+    VerticalLayout {
+        alignment: center;
+        padding: 32px;
+        spacing: 0px;
+
+        HorizontalLayout {
+            alignment: center;
+            Text {
+                text: "CedarApple";
+                color: Theme.text;
+                font-size: 42px;
+                font-weight: 600;
+                letter-spacing: 2.5px;
+            }
+        }
+        Rectangle { height: 8px; }
+        HorizontalLayout {
+            alignment: center;
+            Text {
+                text: "Open a video file, or paste a magnet link to stream a torrent";
+                color: Theme.text-dim;
+                font-size: 14px;
+            }
+        }
+        Rectangle { height: 22px; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            PrimaryButton {
+                text: "Open file";
+                clicked => { root.open-file(); }
+            }
+            OutlineButton {
+                text: "Open a link";
+                icon: Ic.link;
+                clicked => { root.open-link(); }
+            }
+        }
+
+        if root.torrent-rows.length > 0 : VerticalLayout {
+            padding-top: 40px;
+            spacing: 16px;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                Text { text: "Torrents"; color: Theme.text-dim; font-size: 12.5px; }
+                Text { text: root.torrents-total; color: Theme.muted; font-size: 12.5px; }
+            }
+            HorizontalLayout {
+                alignment: center;
+                Flickable {
+                    width: Math.min(560px, root.width - 64px);
+                    height: Math.min(list.preferred-height, Math.max(120px, root.height * 0.38));
+                    viewport-height: list.preferred-height;
+                    list := VerticalLayout {
+                        spacing: 6px;
+                        for row in root.torrent-rows : Rectangle {
+                            height: 58px;
+                            border-radius: 11px;
+                            background: open-touch.has-hover && row.openable ? #ffffff12 : #ffffff08;
+
+                            open-touch := TouchArea {
+                                mouse-cursor: row.openable && root.row-opening == "" ? pointer : default;
+                                clicked => {
+                                    if (row.openable && root.row-opening == "") {
+                                        root.open-torrent(row.folder);
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 15px;
+                                padding-right: 11px;
+                                spacing: 11px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 3px;
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: row.name;
+                                        color: row.openable ? Theme.text : Theme.text-dim;
+                                        font-size: 14px;
+                                        overflow: elide;
+                                    }
+                                    // "Delete what?" — the watched episodes, or everything.
+                                    if root.delete-for == row.folder : HorizontalLayout {
+                                        spacing: 6px;
+                                        alignment: start;
+                                        Text { text: "Delete what?"; color: Theme.text-dim; font-size: 11.5px; vertical-alignment: center; }
+                                        if row.watched > 0 : Chip {
+                                            text: "Watched (" + row.watched + ")";
+                                            clicked => {
+                                                root.delete-for = "";
+                                                root.delete-torrent(row.folder, true);
+                                            }
+                                        }
+                                        Chip {
+                                            text: "Everything";
+                                            danger: true;
+                                            clicked => {
+                                                root.delete-for = "";
+                                                root.delete-torrent(row.folder, false);
+                                            }
+                                        }
+                                    }
+                                    if root.delete-for != row.folder : HorizontalLayout {
+                                        spacing: 8px;
+                                        if root.row-opening == row.folder : HorizontalLayout {
+                                            spacing: 6px;
+                                            Spinner { indeterminate: true; width: 12px; height: 12px; }
+                                            Text { text: "Finding the torrent…"; color: Theme.accent; font-size: 11.5px; }
+                                        }
+                                        if root.row-opening != row.folder : Text {
+                                            text: row.meta;
+                                            color: Theme.muted;
+                                            font-size: 11.5px;
+                                        }
+                                        if root.row-opening != row.folder && row.resume != "" : Text {
+                                            text: row.resume;
+                                            color: Theme.accent;
+                                            font-size: 11.5px;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        spacing: 2px;
+                                        RowAction {
+                                            icon: Ic.folder;
+                                            tip: "Show the files";
+                                            clicked => { root.reveal-torrent(row.folder); }
+                                        }
+                                        RowAction {
+                                            icon: Ic.cross;
+                                            viewbox: 10;
+                                            icon-size: 10px;
+                                            enabled: !row.playing;
+                                            open: root.delete-for == row.folder;
+                                            tip: row.playing ? "Playing right now" : "Delete the torrent and its files";
+                                            clicked => {
+                                                root.delete-for = root.delete-for == row.folder ? "" : row.folder;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

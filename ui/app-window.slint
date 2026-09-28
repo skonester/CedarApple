@@ -1,106 +1,813 @@
-import { TrackSelector, TrackInfo } from "./trackselector.slint";
+// The window: the video, the start screen before it, and the chrome over it.
+//
+// The chrome follows Frame Player (+page.svelte, Controls.svelte, SeekBar.svelte,
+// TopBar.svelte's torrent readout, Osd.svelte, the OSC menus, the keyboard map
+// in keys.svelte.ts), GPL-3.0-or-later, Copyright (c) Evgenii Zakharov: the same
+// layout, glyphs, colours and sizes, rebuilt in Slint. State lives in Rust
+// (src/main.rs); this file shows it and reports what the viewer does.
 
-import { Player } from "./player.slint";
+import { Theme, Fmt, Tip } from "./theme.slint";
+import { AppIcon, StrokeIcon, Ic } from "./icons.slint";
+import { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile } from "./types.slint";
+import { CtlButton, VolumeBar, SeekBar, MenuItem, MenuTitle, MenuPanel } from "./controls.slint";
+import { StartScreen } from "./start.slint";
+import { LinkDialog, PickDialog } from "./dialogs.slint";
+import { Spinner } from "std-widgets.slint";
+
+export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile } from "./types.slint";
+
+// A text button in the top bar, for CedarApple's own mpv-side tools.
+component BarTextButton inherits Rectangle {
+    in property <string> text;
+    in property <string> tip;
+    callback clicked();
+    width: Math.max(36px, label.preferred-width + 16px);
+    height: 34px;
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.hover : transparent;
+    label := Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Tip {
+        text: root.tip;
+        show: touch.has-hover;
+        anchor-width: root.width;
+        y: root.height + 8px;
+    }
+}
 
 export component AppWindow inherits Window {
-    title: "CedarApple";
+    title: root.video_title == "" ? "CedarApple" : root.video_title + " — CedarApple";
     icon: @image-url("../images/program.ico");
     background: #0b0b0b;
+    min-width: 480px;
+    min-height: 320px;
+    preferred-width: 1280px;
+    preferred-height: 760px;
 
-    // Callbacks
+    // ---- Playback ---------------------------------------------------------
     callback toggle_pause();
-    callback skip_by(int);
-    callback seek(float);
-    callback user_activity();
+    callback seek_relative(float);
+    callback seek_absolute(float);
+    callback scrub_begin(float);
+    callback scrub_move(float);
+    callback scrub_end(float);
+    callback scrub_cancel();
+    callback seek_hover(float);
+    callback frame_step(int);
+    callback set_volume(float);
+    callback toggle_mute();
+    callback change_speed(float);
+    callback set_speed(float);
+    callback cycle_loop();
+    callback playlist_prev();
+    callback playlist_next();
+    callback play_index(int);
+    callback chapter_step(int);
+    callback seek_chapter(int);
     callback select_audio_track(int);
     callback select_subtitle_track(int);
-    callback change_speed(float);
-    callback open_file();
+    callback toggle_fullscreen();
+    callback user_activity();
     callback toggle_info_card(bool);
     callback toggle_hwdec();
+    callback close_file();
 
-    callback next();
-    callback previous();
+    // ---- Opening things ---------------------------------------------------
+    callback open_file();
+    callback submit_link(string);
+    callback pick_torrent_file();
+    callback open_torrent_row(string);
+    callback reveal_torrent_row(string);
+    callback delete_torrent_row(string, bool);
+    callback pick_torrent_video(int);
 
-    in-out property <bool> is_loading: false;
-
-    // Player Properties
     in property <image> video_frame;
+    in property <bool> has_file: false;
+    in property <string> video_title: "";
     in property <bool> is_paused: false;
-    in property <float> progress: 0.0;
-    in property <string> time_pos: "00:00";
-    in property <string> duration: "00:00";
+    in property <float> position: 0;
+    in property <float> duration_seconds: 0;
+    in property <float> volume: 100;
+    in property <bool> is_muted: false;
+    in property <float> speed: 1;
+    // 0 off, 1 the whole queue, 2 this file.
+    in property <int> loop_mode: 0;
+    in property <bool> is_fullscreen: false;
     in property <bool> controls_visible: true;
-
-    in property <bool> has_next: false;
-    in property <bool> has_previous: false;
-
+    in property <int> playlist_pos: 0;
+    in property <int> playlist_count: 0;
+    in property <[QueueEntry]> queue: [];
     in property <[TrackInfo]> audio_tracks: [];
     in property <[TrackInfo]> subtitle_tracks: [];
-    in property <string> audio_track_name: "Default";
-    in property <string> subtitle_track_name: "None";
-    in property <string> playback_speed: "1.00x";
-    in property <string> video_title: "";
-    in property <string> remaining_time: "-00:00";
+    in property <[ChapterInfo]> chapters: [];
+    in property <int> current_chapter: -1;
+    in property <string> hover_chapter: "";
+    in property <[Band]> buffered: [];
     in property <string> ends_at: "";
+    // mpv is waiting for data (`paused-for-cache`).
+    in property <bool> stalled: false;
 
-    // Sizes exported to Rust
-    out property <length> video_width: video_area.width;
-    out property <length> video_height: video_area.height;
+    // The torrent readout, top right.
+    in property <bool> chip_visible: false;
+    in property <string> chip_label: "";
+    in property <float> chip_progress: -1;
 
-    video_area := Player {
-        width: 100%;
-        height: 100%;
+    // The transient popup, top left.
+    in property <bool> osd_visible: false;
+    in property <string> osd_text: "";
+    in property <float> osd_progress: -1;
 
-        video_frame: root.video_frame;
-        is_paused: root.is_paused;
-        progress: root.progress;
-        time_pos: root.time_pos;
-        duration: root.duration;
-        controls_visible: root.controls_visible;
+    in-out property <bool> is_loading: false;
+    in property <string> loading_text: "Opening…";
+    in property <string> loading_sub: "";
 
-        audio_tracks: root.audio_tracks;
-        subtitle_tracks: root.subtitle_tracks;
-        audio_track_name: root.audio_track_name;
-        subtitle_track_name: root.subtitle_track_name;
-        playback_speed: root.playback_speed;
-        video_title: root.video_title;
-        remaining_time: root.remaining_time;
-        ends_at: root.ends_at;
+    in property <[TorrentRowData]> torrent_rows: [];
+    in property <string> torrents_total: "";
+    in property <string> row_opening: "";
 
-        has_next: root.has_next;
-        has_previous: root.has_previous;
+    in-out property <bool> link_open: false;
+    in-out property <string> link_text: "";
+    in property <string> link_error: "";
+    in property <bool> link_busy: false;
 
-        next() => root.next();
-        previous => root.previous();
+    in-out property <bool> pick_open: false;
+    in property <string> pick_title: "";
+    in property <[PickFile]> pick_files: [];
 
-        toggle_pause => toggle_pause();
-        skip_by(i) => skip_by(i);
-        seek(f) => seek(f);
-        user_activity => user_activity();
-        select_audio_track(idx) => select_audio_track(idx);
-        select_subtitle_track(idx) => select_subtitle_track(idx);
-        change_speed(s) => root.change_speed(s);
-        open_file => root.open_file();
-        toggle_info_card(lean) => root.toggle_info_card(lean);
-        toggle_hwdec => root.toggle_hwdec();
+    // Read by Rust.
+    out property <length> video_width: video.width;
+    out property <length> video_height: video.height;
+    out property <bool> is_scrubbing: seekbar.dragging;
+    // Something the pointer is on or has open wants the chrome kept up.
+    out property <bool> keep_chrome: root.open-menu != "" || root.ctx-open || osc-touch.has-hover || bar-touch.has-hover;
+
+    // "", "queue", "chapter", "audio", "sub"
+    property <string> open-menu: "";
+    property <bool> ctx-open: false;
+    property <length> ctx-x;
+    property <length> ctx-y;
+    property <bool> chrome: root.has_file && (root.controls_visible || root.open-menu != "" || root.ctx-open);
+
+    function toggle-menu(kind: string) {
+        root.open-menu = root.open-menu == kind ? "" : kind;
     }
 
-    // Loading Overlay
-    if (root.is_loading) : Rectangle {
-        background: #000000aa;
-        // This TouchArea covers the whole screen and swallows all clicks
-        TouchArea { }
+    function open-link() {
+        root.link_open = true;
+    }
 
-        VerticalLayout {
-            alignment: center;
-            spacing: 20px;
-            Text {
-                text: "Loading...";
-                color: white;
-                font-size: 24px;
-                horizontal-alignment: center;
+    changed link_open => {
+        if (!root.link_open) {
+            key-handler.focus();
+        }
+    }
+    changed pick_open => {
+        if (!root.pick_open) {
+            key-handler.focus();
+        }
+    }
+
+    // Frame Player's default key map (keys.svelte.ts), plus CedarApple's C for
+    // the info card and Ctrl+O kept from before.
+    key-handler := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                if (root.open-menu != "" || root.ctx-open) {
+                    root.open-menu = "";
+                    root.ctx-open = false;
+                } else if (root.is_fullscreen) {
+                    root.toggle_fullscreen();
+                }
+                return accept;
+            }
+            if (event.text == "o" || event.text == "O") {
+                root.open_file();
+                return accept;
+            }
+            if ((event.text == "l" || event.text == "L") && event.modifiers.control) {
+                root.open-link();
+                return accept;
+            }
+            if (event.text == Key.F11 || ((event.text == "f" || event.text == "F") && !event.modifiers.control)) {
+                root.toggle_fullscreen();
+                return accept;
+            }
+            if (!root.has_file) {
+                return reject;
+            }
+            root.user_activity();
+            if (event.text == " " || event.text == "k" || event.text == "K") {
+                root.toggle_pause();
+            } else if (event.text == Key.LeftArrow && event.modifiers.control) {
+                root.chapter_step(-1);
+            } else if (event.text == Key.RightArrow && event.modifiers.control) {
+                root.chapter_step(1);
+            } else if (event.text == Key.LeftArrow) {
+                root.seek_relative(event.modifiers.shift ? -1 : -5);
+            } else if (event.text == Key.RightArrow) {
+                root.seek_relative(event.modifiers.shift ? 1 : 5);
+            } else if (event.text == "j" || event.text == "J") {
+                root.seek_relative(-10);
+            } else if (event.text == "l") {
+                root.seek_relative(10);
+            } else if (event.text == "L") {
+                root.cycle_loop();
+            } else if (event.text == Key.Home) {
+                root.seek_absolute(0);
+            } else if (event.text == Key.End) {
+                root.seek_absolute(Math.max(0, root.duration_seconds - 0.5));
+            } else if (event.text == ",") {
+                root.frame_step(-1);
+            } else if (event.text == ".") {
+                root.frame_step(1);
+            } else if (event.text == "[") {
+                root.change_speed(1 / 1.25);
+            } else if (event.text == "]") {
+                root.change_speed(1.25);
+            } else if (event.text == Key.Backspace) {
+                root.set_speed(1);
+            } else if (event.text == Key.PageUp) {
+                root.playlist_prev();
+            } else if (event.text == Key.PageDown) {
+                root.playlist_next();
+            } else if (event.text == Key.UpArrow) {
+                root.set_volume(Math.min(100, root.volume + 5));
+            } else if (event.text == Key.DownArrow) {
+                root.set_volume(Math.max(0, root.volume - 5));
+            } else if (event.text == "m" || event.text == "M") {
+                root.toggle_mute();
+            } else if (event.text == "c") {
+                root.toggle_info_card(false);
+            } else if (event.text == "C") {
+                root.toggle_info_card(true);
+            } else {
+                return reject;
+            }
+            return accept;
+        }
+    }
+
+    // ---- The picture ------------------------------------------------------
+    video := Rectangle {
+        background: black;
+
+        Image {
+            source: root.video_frame;
+            width: 100%;
+            height: 100%;
+            image-fit: contain;
+        }
+
+        TouchArea {
+            mouse-cursor: root.has_file && !root.controls_visible ? MouseCursor.none : MouseCursor.default;
+            // Click pauses, double-click is fullscreen — the two clicks of a
+            // double-click toggle pause twice and cancel out.
+            clicked => {
+                if (root.has_file) {
+                    root.toggle_pause();
+                }
+            }
+            double-clicked => {
+                if (root.has_file) {
+                    root.toggle_fullscreen();
+                }
+            }
+            pointer-event(evt) => {
+                root.user_activity();
+                if (evt.kind == PointerEventKind.down && evt.button == PointerEventButton.right) {
+                    root.ctx-x = self.mouse-x;
+                    root.ctx-y = self.mouse-y;
+                    root.ctx-open = true;
+                }
+            }
+            scroll-event(evt) => {
+                if (root.has_file) {
+                    root.set_volume(Math.max(0, Math.min(100, root.volume + (evt.delta-y > 0 ? 5 : -5))));
+                    return accept;
+                }
+                return reject;
             }
         }
+    }
+
+    if !root.has_file : StartScreen {
+        torrent-rows: root.torrent_rows;
+        torrents-total: root.torrents_total;
+        row-opening: root.row_opening;
+        open-file => { root.open_file(); }
+        open-link => { root.open-link(); }
+        open-torrent(folder) => { root.open_torrent_row(folder); }
+        reveal-torrent(folder) => { root.reveal_torrent_row(folder); }
+        delete-torrent(folder, watched) => { root.delete_torrent_row(folder, watched); }
+    }
+
+    // ---- Top bar ----------------------------------------------------------
+    topbar := Rectangle {
+        y: 0;
+        height: 84px;
+        opacity: root.chrome ? 1 : 0;
+        visible: root.has_file && self.opacity > 0.01;
+        animate opacity { duration: 250ms; }
+
+        Rectangle {
+            background: @linear-gradient(180deg, #000000a6 0%, #00000000 100%);
+        }
+
+        // A parent of the bar's buttons, so it still reports hover while the
+        // pointer is on one of them.
+        bar-touch := TouchArea {
+            height: 56px;
+            y: 0;
+            pointer-event(evt) => { root.user_activity(); }
+
+            HorizontalLayout {
+                y: 10px;
+                height: 36px;
+                padding-left: Theme.edge;
+                padding-right: Theme.edge - 6px;
+                spacing: 4px;
+                Text {
+                    text: root.video_title;
+                    color: Theme.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                CtlButton {
+                    icon-size: 0px;
+                    tip: "Open file (O)";
+                    tip-below: true;
+                    clicked => { root.open_file(); }
+                    StrokeIcon { x: 10px; y: 9px; data: Ic.folder; size: 16px; color: Theme.text; stroke-width: 1.4px; }
+                }
+                CtlButton {
+                    icon-size: 0px;
+                    tip: "Open a link (Ctrl+L)";
+                    tip-below: true;
+                    clicked => { root.open-link(); }
+                    StrokeIcon { x: 9px; y: 8px; data: Ic.link; viewbox: 24; size: 18px; color: Theme.text; stroke-width: 1.8px; }
+                }
+                BarTextButton {
+                    text: "i";
+                    tip: "Info card (C)";
+                    clicked => { root.toggle_info_card(false); }
+                }
+                BarTextButton {
+                    text: "GPU";
+                    tip: "Hardware decoding";
+                    clicked => { root.toggle_hwdec(); }
+                }
+                CtlButton {
+                    icon-size: 0px;
+                    tip: "Close";
+                    tip-align: 1;
+                    tip-below: true;
+                    clicked => { root.close_file(); }
+                    StrokeIcon { x: 13px; y: 12px; data: Ic.cross; viewbox: 10; size: 10px; color: Theme.text; stroke-width: 1.4px; }
+                }
+            }
+        }
+    }
+
+    // ---- Torrent readout --------------------------------------------------
+    // Outside the chrome: a stall happens exactly when nobody is touching
+    // anything, so while stalled it stays up through idle.
+    if root.has_file && root.chip_visible && (root.chrome || root.stalled) : Rectangle {
+        x: parent.width - self.width - Theme.edge;
+        y: 58px;
+        width: Math.max(172px, chip-line.preferred-width + 22px);
+        height: root.chip_progress >= 0 ? 38px : 31px;
+        border-radius: 9px;
+        border-width: 1px;
+        border-color: root.stalled ? #818cf873 : #ffffff1a;
+        background: #101016d1;
+
+        chip-line := HorizontalLayout {
+            x: 11px;
+            y: 7px;
+            height: 16px;
+            spacing: 7px;
+            VerticalLayout {
+                alignment: center;
+                StrokeIcon {
+                    data: Ic.download;
+                    size: 12px;
+                    stroke-width: 1.6px;
+                    color: root.stalled ? Theme.accent : #8f8f9c;
+                }
+            }
+            Text {
+                text: root.stalled ? "Waiting for data…" : root.chip_label;
+                color: root.stalled ? #e8e8ec : Theme.text-soft;
+                font-size: 11.5px;
+                vertical-alignment: center;
+            }
+        }
+        if root.chip_progress >= 0 : Rectangle {
+            x: 11px;
+            y: 28px;
+            width: parent.width - 22px;
+            height: 2px;
+            border-radius: 1px;
+            background: #ffffff24;
+            Rectangle {
+                x: 0;
+                width: parent.width * Math.max(0, Math.min(1, root.chip_progress));
+                border-radius: 1px;
+                background: #ffffffbf;
+                animate width { duration: 300ms; }
+            }
+        }
+    }
+
+    // ---- OSD --------------------------------------------------------------
+    if root.osd_visible && root.osd_text != "" : Rectangle {
+        x: Theme.edge;
+        y: 60px;
+        width: Math.max(202px, osd-text.preferred-width + 34px);
+        height: root.osd_progress >= 0 ? 60px : 44px;
+        background: Theme.osd-bg;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.surface-border;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+        drop-shadow-offset-y: 8px;
+
+        osd-text := Text {
+            x: 16px;
+            y: 12px;
+            text: root.osd_text;
+            color: Theme.text;
+            font-size: 14px;
+        }
+        if root.osd_progress >= 0 : Rectangle {
+            x: 16px;
+            y: 40px;
+            width: parent.width - 32px;
+            height: 4px;
+            border-radius: 2px;
+            background: #ffffff2e;
+            Rectangle {
+                x: 0;
+                width: parent.width * Math.max(0, Math.min(1, root.osd_progress));
+                border-radius: 2px;
+                background: white;
+            }
+        }
+    }
+
+    // ---- The control bar --------------------------------------------------
+    // Opacity rather than a conditional, so the bar fades like Frame Player's;
+    // it stops taking clicks once it has faded out.
+    osc := Rectangle {
+        property <length> content-height: 99px;
+        y: parent.height - self.content-height;
+        height: self.content-height;
+        opacity: root.chrome ? 1 : 0;
+        visible: root.has_file && self.opacity > 0.01;
+        animate opacity { duration: 250ms; }
+
+        // The gradient reaches 44px above the bar and takes no clicks there.
+        Rectangle {
+            y: -44px;
+            height: parent.height + 44px;
+            background: @linear-gradient(180deg, #00000000 0%, #00000052 45%, #000000b8 100%);
+        }
+
+        // Clicks on the bar must not reach the picture's play/pause. A parent
+        // of the controls, so it still reports hover over one of them.
+        osc-touch := TouchArea {
+            pointer-event(evt) => { root.user_activity(); }
+
+        VerticalLayout {
+            padding-left: Theme.edge;
+            padding-right: Theme.edge;
+            padding-bottom: 12px;
+            spacing: 8px;
+
+            seekbar := SeekBar {
+                position: root.position;
+                duration: root.duration_seconds;
+                buffered: root.buffered;
+                chapters: root.chapters;
+                hover-chapter: root.hover_chapter;
+                right-note: root.ends_at;
+                scrub-begin(t) => { root.scrub_begin(t); }
+                scrub-move(t) => { root.user_activity(); root.scrub_move(t); }
+                scrub-end(t) => { root.scrub_end(t); }
+                scrub-cancel => { root.scrub_cancel(); }
+                hovered(t) => { root.user_activity(); root.seek_hover(t); }
+            }
+
+            // Three clusters: sound on the left, transport centered on the
+            // window, tools on the right. The row reaches 11px past the bar's
+            // padding so the glyphs at its ends land on the window's edge line.
+            row := Rectangle {
+                height: 42px;
+
+                cl-left := HorizontalLayout {
+                    x: -11px;
+                    width: self.preferred-width;
+                    spacing: 6px;
+                    CtlButton {
+                        icon: root.is_muted || root.volume <= 0 ? Ic.volume-off : Ic.volume-on;
+                        tip: "Sound (M)";
+                        tip-align: -1;
+                        clicked => { root.toggle_mute(); }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        padding-left: 2px;
+                        padding-right: 6px;
+                        VolumeBar {
+                            value: root.is_muted ? 0 : root.volume;
+                            tip: "Volume: " + Math.round(root.volume);
+                            changed(v) => { root.set_volume(v); }
+                        }
+                    }
+                    if Math.abs(root.speed - 1) > 0.001 : Rectangle {
+                        width: speed-label.preferred-width + 12px;
+                        speed-label := Text {
+                            text: (Math.round(root.speed * 100) / 100) + "×";
+                            color: speed-touch.has-hover ? #a5b4fc : Theme.accent;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                        speed-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.set_speed(1); }
+                        }
+                        Tip {
+                            text: "Speed ([ / ]) — click for 1×";
+                            show: speed-touch.has-hover;
+                            anchor-width: parent.width;
+                        }
+                    }
+                }
+
+                cl-mid := HorizontalLayout {
+                    x: (parent.width - self.preferred-width) / 2;
+                    width: self.preferred-width;
+                    spacing: 14px;
+                    CtlButton {
+                        icon: Ic.prev;
+                        enabled: root.playlist_pos > 0;
+                        tip: "Previous file (PgUp)";
+                        clicked => { root.playlist_prev(); }
+                    }
+                    CtlButton {
+                        width: 46px;
+                        height: 42px;
+                        icon: root.is_paused ? Ic.play : Ic.pause;
+                        icon-size: 32px;
+                        tip: "Play/pause (Space)";
+                        clicked => { root.toggle_pause(); }
+                    }
+                    CtlButton {
+                        icon: Ic.next;
+                        enabled: root.playlist_pos < root.playlist_count - 1;
+                        tip: "Next file (PgDn)";
+                        clicked => { root.playlist_next(); }
+                    }
+                }
+
+                cl-right := HorizontalLayout {
+                    x: parent.width - self.preferred-width + 11px;
+                    width: self.preferred-width;
+                    spacing: 6px;
+                    CtlButton {
+                        icon: Ic.loop;
+                        icon-extra: root.loop_mode == 2 ? Ic.loop-one : "";
+                        active: root.loop_mode != 0;
+                        tip: root.loop_mode == 0 ? "Repeat: off (Shift+L)" : (root.loop_mode == 1 ? "Repeat: all (Shift+L)" : "Repeat: one (Shift+L)");
+                        clicked => { root.cycle_loop(); }
+                    }
+                    if root.playlist_count > 1 : CtlButton {
+                        icon: Ic.queue;
+                        active: root.open-menu == "queue";
+                        tip: "Queue";
+                        clicked => { root.toggle-menu("queue"); }
+                    }
+                    if root.chapters.length > 0 : CtlButton {
+                        icon: Ic.chapters;
+                        active: root.open-menu == "chapter";
+                        tip: "Chapters (Ctrl+← / Ctrl+→)";
+                        clicked => { root.toggle-menu("chapter"); }
+                    }
+                    if root.audio_tracks.length > 1 : CtlButton {
+                        icon: Ic.audio;
+                        active: root.open-menu == "audio";
+                        tip: "Audio track";
+                        clicked => { root.toggle-menu("audio"); }
+                    }
+                    CtlButton {
+                        icon: Ic.subs;
+                        active: root.open-menu == "sub";
+                        tip: "Subtitles";
+                        clicked => { root.toggle-menu("sub"); }
+                    }
+                    CtlButton {
+                        icon: root.is_fullscreen ? Ic.fullscreen-exit : Ic.fullscreen;
+                        icon-size: 24px;
+                        tip: root.is_fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)";
+                        tip-align: 1;
+                        clicked => { root.toggle_fullscreen(); }
+                    }
+                }
+            }
+        }
+        }
+    }
+
+    // ---- OSC menus --------------------------------------------------------
+    if root.open-menu != "" || root.ctx-open : TouchArea {
+        clicked => {
+            root.open-menu = "";
+            root.ctx-open = false;
+        }
+    }
+
+    if root.open-menu != "" && root.has_file : MenuPanel {
+        x: parent.width - self.width - Theme.edge;
+        y: osc.y - self.height - 12px;
+        limit: Math.min(300px, root.height - 142px);
+        content-height: items.preferred-height;
+
+        items := VerticalLayout {
+            if root.open-menu == "queue" : MenuTitle { text: "QUEUE"; }
+            if root.open-menu == "queue" : VerticalLayout {
+                for q[i] in root.queue : MenuItem {
+                    text: (i + 1) + ".  " + q.name;
+                    selected: q.current;
+                    clicked => {
+                        root.open-menu = "";
+                        root.play_index(i);
+                    }
+                }
+            }
+            if root.open-menu == "chapter" : MenuTitle { text: "CHAPTERS"; }
+            if root.open-menu == "chapter" : VerticalLayout {
+                for c[i] in root.chapters : MenuItem {
+                    text: c.title;
+                    note: Fmt.time(c.time);
+                    selected: i == root.current_chapter;
+                    clicked => {
+                        root.open-menu = "";
+                        root.seek_chapter(i);
+                    }
+                }
+            }
+            if root.open-menu == "audio" : MenuTitle { text: "AUDIO TRACK"; }
+            if root.open-menu == "audio" : VerticalLayout {
+                for t in root.audio_tracks : MenuItem {
+                    text: t.name;
+                    selected: t.active;
+                    clicked => {
+                        root.open-menu = "";
+                        root.select_audio_track(t.id);
+                    }
+                }
+            }
+            if root.open-menu == "sub" : MenuTitle { text: "SUBTITLES"; }
+            if root.open-menu == "sub" : VerticalLayout {
+                for t in root.subtitle_tracks : MenuItem {
+                    text: t.name;
+                    selected: t.active;
+                    clicked => {
+                        root.open-menu = "";
+                        root.select_subtitle_track(t.id);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Context menu (right click on the picture) -------------------------
+    if root.ctx-open : Rectangle {
+        property <length> w: 248px;
+        property <length> h: ctx-items.preferred-height + 12px;
+        x: Math.max(8px, Math.min(root.width - self.w - 8px, root.ctx-x));
+        y: Math.max(8px, Math.min(root.height - self.h - 8px, root.ctx-y));
+        width: self.w;
+        height: self.h;
+        background: Theme.menu-bg;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.surface-border;
+        TouchArea { }
+
+        ctx-items := VerticalLayout {
+            padding: 6px;
+            if root.has_file : MenuTitle { text: "SPEED"; }
+            if root.has_file : HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                padding-bottom: 4px;
+                spacing: 2px;
+                for s in [0.5, 0.75, 1, 1.25, 1.5, 2] : Rectangle {
+                    height: 28px;
+                    border-radius: 6px;
+                    background: sp-touch.has-hover ? Theme.menu-hover : (Math.abs(root.speed - s) < 0.001 ? #818cf82e : transparent);
+                    Text {
+                        text: s + "×";
+                        color: Math.abs(root.speed - s) < 0.001 ? Theme.accent : Theme.text-soft;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    sp-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.ctx-open = false;
+                            root.set_speed(s);
+                        }
+                    }
+                }
+            }
+            if root.has_file : Rectangle { height: 1px; background: #ffffff17; }
+            MenuItem {
+                text: "Open file…";
+                note: "O";
+                clicked => { root.ctx-open = false; root.open_file(); }
+            }
+            MenuItem {
+                text: "Open a link…";
+                note: "Ctrl+L";
+                clicked => { root.ctx-open = false; root.open-link(); }
+            }
+            if root.has_file : MenuItem {
+                text: "Close";
+                clicked => { root.ctx-open = false; root.close_file(); }
+            }
+        }
+    }
+
+    // ---- Loading ----------------------------------------------------------
+    if root.is_loading : Rectangle {
+        background: #000000aa;
+        TouchArea { }
+        VerticalLayout {
+            alignment: center;
+            spacing: 14px;
+            HorizontalLayout {
+                alignment: center;
+                Spinner { indeterminate: true; width: 36px; height: 36px; }
+            }
+            Text {
+                text: root.loading_text;
+                color: Theme.text;
+                font-size: 16px;
+                horizontal-alignment: center;
+            }
+            if root.loading_sub != "" : HorizontalLayout {
+                alignment: center;
+                Text {
+                    width: Math.min(self.preferred-width, root.width - 80px);
+                    text: root.loading_sub;
+                    color: Theme.text-dim;
+                    font-size: 12.5px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    // ---- Dialogs ----------------------------------------------------------
+    if root.link_open : LinkDialog {
+        text <=> root.link_text;
+        error: root.link_error;
+        busy: root.link_busy;
+        init => { self.focus-input(); }
+        submit(text) => { root.submit_link(text); }
+        pick-torrent-file => { root.pick_torrent_file(); }
+        close => {
+            if (!root.link_busy) {
+                root.link_open = false;
+            }
+        }
+    }
+
+    if root.pick_open : PickDialog {
+        title: root.pick_title;
+        files: root.pick_files;
+        pick(index) => { root.pick_torrent_video(index); }
+        close => { root.pick_open = false; }
     }
 }

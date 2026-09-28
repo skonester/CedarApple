@@ -10,8 +10,8 @@ export component SpeedSelector inherits Rectangle {
 
     width: 140px;
     height: 35px;
-    background: #ffffff12;
-    border-radius: 4px;
+    background: #ffffff14;
+    border-radius: 6px;
     border-width: 1px;
     border-color: #ffffff25;
 
@@ -19,7 +19,7 @@ export component SpeedSelector inherits Rectangle {
         { value: 0.25, name: "0.25x" },
         { value: 0.5, name: "0.5x" },
         { value: 0.75, name: "0.75x" },
-        { value: 1.0, name: "1.0x" },
+        { value: 1.0, name: "1.00x" },
         { value: 1.25, name: "1.25x" },
         { value: 1.5, name: "1.5x" },
         { value: 1.75, name: "1.75x" },
@@ -81,6 +81,7 @@ export component SpeedSelector inherits Rectangle {
                     item-touch := TouchArea {
                         clicked => {
                             root.select_speed(opt.value);
+                            popup.close();
                         }
                     }
                 }

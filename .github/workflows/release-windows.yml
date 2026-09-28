@@ -1,0 +1,93 @@
+# Builds the portable Windows zip and publishes it as a GitHub release.
+#
+# Push a tag like `v0.3.0` to build and release it. "Run workflow" on the
+# Actions tab builds the current branch; give it a tag there to release that
+# build as well, or leave the tag empty to only keep the zip as a run artifact.
+#
+# The zip is the whole app, nothing to install: cedarapple.exe, libmpv-2.dll
+# (from mpv-dev/, which build.rs copies beside the exe), the mpv/ config
+# folder with the bundled scripts, and the license texts.
+
+name: Windows portable release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.3.0). Empty = build only."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+
+      - name: Work out the release name
+        id: meta
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag }}"
+          if ("${{ github.ref_type }}" -eq "tag") { $tag = "${{ github.ref_name }}" }
+          if ($tag) {
+            $version = $tag
+          } else {
+            $cargo = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+            $version = "v$cargo-$("${{ github.sha }}".Substring(0, 7))"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "zip=CedarApple-$version-windows-x64-portable.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist/CedarApple"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item target/release/cedarapple.exe $out/
+          Copy-Item target/release/libmpv-2.dll $out/
+          Copy-Item -Recurse target/release/mpv $out/mpv
+          Copy-Item LICENSE, README.md $out/
+          Copy-Item -Recurse licenses $out/licenses
+          Copy-Item vendor/README-librqbit.md $out/licenses/
+          foreach ($f in "cedarapple.exe", "libmpv-2.dll", "mpv") {
+            if (-not (Test-Path "$out/$f")) { throw "missing from the package: $f" }
+          }
+          Compress-Archive -Path $out -DestinationPath "dist/${{ steps.meta.outputs.zip }}"
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.zip }}
+          path: dist/${{ steps.meta.outputs.zip }}
+
+      - name: Publish the release
+        if: steps.meta.outputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: CedarApple ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          files: dist/${{ steps.meta.outputs.zip }}

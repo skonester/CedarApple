@@ -12,8 +12,8 @@ export component TrackSelector inherits Rectangle {
 
     width: 160px;
     height: 35px;
-    background: #ffffff12;
-    border-radius: 4px;
+    background: #ffffff14;
+    border-radius: 6px;
     border-width: 1px;
     border-color: #ffffff25;
 
@@ -72,6 +72,7 @@ export component TrackSelector inherits Rectangle {
                     item-touch := TouchArea {
                         clicked => {
                             root.select_track(t.id);
+                            popup.close();
                         }
                     }
                 }

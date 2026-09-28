@@ -1,0 +1,50 @@
+// Data the Rust side hands the UI. Kept in one file so app-window.slint can
+// re-export all of them and Rust gets a generated struct for each.
+
+export struct TrackInfo {
+    id: int,
+    name: string,
+    active: bool,
+}
+
+export struct ChapterInfo {
+    title: string,
+    // Seconds from the start of the file.
+    time: float,
+}
+
+// One entry of the play queue (mpv's playlist).
+export struct QueueEntry {
+    name: string,
+    current: bool,
+}
+
+// A stretch of a torrent file already on disk, as fractions of the file.
+export struct Band {
+    from: float,
+    to: float,
+}
+
+// A row of the start screen's torrent list.
+export struct TorrentRowData {
+    folder: string,
+    name: string,
+    meta: string,
+    resume: string,
+    // A magnet is known, so the row can be reopened.
+    openable: bool,
+    // This torrent is what mpv is streaming right now: it cannot be deleted.
+    playing: bool,
+    watched: int,
+}
+
+// A video of a torrent, in the "What to watch" list.
+export struct PickFile {
+    index: int,
+    name: string,
+    path: string,
+    size: string,
+    left: string,
+    started: bool,
+    done: bool,
+}

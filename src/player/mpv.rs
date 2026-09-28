@@ -155,6 +155,98 @@ impl MpvHandle {
         }
     }
 
+    /// Run a command and wait for mpv to accept it.
+    pub fn command(&self, args: &[&str]) -> bool {
+        let Ok(owned) = args.iter().map(|a| CString::new(*a)).collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        let mut ptrs: Vec<*const std::os::raw::c_char> = owned.iter().map(|c| c.as_ptr()).collect();
+        ptrs.push(ptr::null());
+        unsafe { mpv_command(self.get(), ptrs.as_mut_ptr()) >= 0 }
+    }
+
+    /// Run a command without waiting. Its completion arrives later as an
+    /// `MPV_EVENT_COMMAND_REPLY` carrying `reply` as its userdata.
+    pub fn command_async(&self, reply: u64, args: &[&str]) {
+        let Ok(owned) = args.iter().map(|a| CString::new(*a)).collect::<Result<Vec<_>, _>>()
+        else {
+            return;
+        };
+        let mut ptrs: Vec<*const std::os::raw::c_char> = owned.iter().map(|c| c.as_ptr()).collect();
+        ptrs.push(ptr::null());
+        unsafe {
+            mpv_command_async(self.get(), reply, ptrs.as_mut_ptr());
+        }
+    }
+
+    pub fn get_flag(&self, name: &str) -> bool {
+        let Ok(c_name) = CString::new(name) else { return false };
+        let mut v: std::os::raw::c_int = 0;
+        unsafe {
+            mpv_get_property(
+                self.get(),
+                c_name.as_ptr(),
+                mpv_format_MPV_FORMAT_FLAG,
+                &mut v as *mut _ as *mut c_void,
+            );
+        }
+        v != 0
+    }
+
+    pub fn set_flag(&self, name: &str, value: bool) {
+        let Ok(c_name) = CString::new(name) else { return };
+        let v: std::os::raw::c_int = value as _;
+        unsafe {
+            mpv_set_property(
+                self.get(),
+                c_name.as_ptr(),
+                mpv_format_MPV_FORMAT_FLAG,
+                &v as *const _ as *mut c_void,
+            );
+        }
+    }
+
+    pub fn get_double(&self, name: &str) -> Option<f64> {
+        let c_name = CString::new(name).ok()?;
+        let mut v: f64 = 0.0;
+        let ok = unsafe {
+            mpv_get_property(
+                self.get(),
+                c_name.as_ptr(),
+                mpv_format_MPV_FORMAT_DOUBLE,
+                &mut v as *mut _ as *mut c_void,
+            )
+        } >= 0;
+        ok.then_some(v)
+    }
+
+    pub fn set_double(&self, name: &str, value: f64) {
+        let Ok(c_name) = CString::new(name) else { return };
+        unsafe {
+            mpv_set_property(
+                self.get(),
+                c_name.as_ptr(),
+                mpv_format_MPV_FORMAT_DOUBLE,
+                &value as *const _ as *mut c_void,
+            );
+        }
+    }
+
+    pub fn get_int(&self, name: &str) -> Option<i64> {
+        let c_name = CString::new(name).ok()?;
+        let mut v: i64 = 0;
+        let ok = unsafe {
+            mpv_get_property(
+                self.get(),
+                c_name.as_ptr(),
+                mpv_format_MPV_FORMAT_INT64,
+                &mut v as *mut _ as *mut c_void,
+            )
+        } >= 0;
+        ok.then_some(v)
+    }
+
     pub fn stop(&self) {
 
         let scmd = CString::new("stop").unwrap();
@@ -275,7 +367,7 @@ pub async fn open_player(
         }
     }
 
-    let (has_prev, has_next, title) = {
+    let (_has_prev, _has_next, title) = {
         let state = state_arc.lock().unwrap();
         let (p, n) = if let Some((items, idx)) = state.active_playlist.as_ref() {
             (*idx > 0, *idx < items.len() - 1)
@@ -333,8 +425,7 @@ pub async fn open_player(
         }
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_video_title(title.into());
-            ui.set_has_next(has_next);
-            ui.set_has_previous(has_prev);
+            ui.set_has_file(true);
             ui.set_is_loading(false);
         }
     });

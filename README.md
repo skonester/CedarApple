@@ -7,69 +7,23 @@ video file you pick, with basic transport controls. Built on `libmpv` for playba
 
 ## License
 
-This project is dual-licensed under both the MIT License and the GNU General Public License v3.0 (GPLv3).
+CedarApple is free software under the **GNU General Public License, version 3
+or later** — see [LICENSE](LICENSE). Copyright (c) 2026 skonester and
+Evgenii Zakharov.
 
-### MIT License
+The player started from code by tfo-dot released under the MIT License, which
+permits using it in a GPL-licensed work; CedarApple as a whole is distributed
+under the GPL. The MIT notice for that code is kept in
+[licenses/MIT-tfo-dot.txt](licenses/MIT-tfo-dot.txt), as its license requires.
 
-Copyright (c) 2026 tfo-dot
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-### GNU General Public License v3.0 (GPLv3)
-
-GNU GENERAL PUBLIC LICENSE
-Version 3, 29 June 2007
-
-Copyright (C) 2007, 2026 skonester
-
-Everyone is permitted to copy and distribute verbatim copies
-of this license document, but changing it is not allowed.
-
-Preamble
-
-The GNU General Public License is a free, copyleft license for
-software and other kinds of works.
-
-The licenses for most software and other practical works are designed
-to take away your freedom to share and modify the software. By contrast,
-the GNU General Public License is intended to guarantee your freedom to
-share and change free software. To protect your rights, we need to make
-restrictions that forbid anyone to deny you these rights or to ask you to
-submit to any kind of legal agreement. Therefore, you have the conditions
-below.
-
-You must give any other recipients of the Work or Derivative Works
-a copy of this License; you must not take away or alter the substance
-of the License and of its terms, and you may not impose any further
-restrictions upon the recipients.
-
-You may apply the work under the terms of the GNU General Public License
-as published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version published by that same
-author. This License gives you permission to copy, modify and redistribute
-the work, under certain conditions. Copy, modify, and distribute the work
-or any part of it under the terms of this License. The work is distributed
-"as is", without warranty of any kind, express or implied; without even the
-implied warranty of merchantability or fitness for a particular purpose.
-
-You should have received a copy of the GNU General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
+Much of the player is ported from [Frame Player](https://github.com/risenxxx/frame-player)
+(Copyright (c) Evgenii Zakharov, GPL-3.0-or-later): the torrent engine is its
+Rust code, taken nearly verbatim, and the controls, start screen, torrent flow
+and seek behaviour are its Svelte UI rebuilt in Slint and Rust. Every ported
+file says so at its top; [FRAME_PLAYER_ADOPTION.md](FRAME_PLAYER_ADOPTION.md)
+lists them. The vendored librqbit crates are Apache-2.0
+([licenses/Apache-2.0.txt](licenses/Apache-2.0.txt), changes described in
+[vendor/README-librqbit.md](vendor/README-librqbit.md)).
 
 ## Building
 
@@ -89,8 +43,33 @@ cargo run --release
 
 ## What's here / not here
 
-It's just the player - no library browser, no accounts, no scrobbling. Two bigger pieces
+A Slint player over libmpv with Frame Player's controls and its torrent
+streaming:
+
+- **Start screen**: open a file, or open a link — a magnet, a `.torrent`, or
+  any URL mpv plays. Torrents already on disk are listed with their size and
+  where you left off; click one to continue, or delete it (just the watched
+  episodes, or everything).
+- **Torrent streaming**: a magnet resolves to its file list, you pick what to
+  watch, and the other videos queue around it. Only the file being played is
+  downloaded, seeding is off, subtitles inside the release are attached, and
+  the next episode is fetched once the current one is complete. The seekbar
+  shades what is already on disk; a readout top-right gives peers and speed
+  and says when playback is waiting for data. Data lives in the app's cache
+  folder (`%LOCALAPPDATA%\CedarApple\cache\torrents` on Windows).
+- **Controls**: drag-to-seek that shows the frame under the pointer and lands
+  exactly where you let go, chapter marks and names, queue, chapter, audio and
+  subtitle menus, repeat (off/all/one), volume, speed, fullscreen, an on-screen
+  readout for changes, and resume from where each file was left.
+- **Keys** (Frame Player's map): Space/K pause · ←/→ 5 s (Shift: 1 s) · J/L
+  10 s · Home/End · , / . frame step · [ / ] speed, Backspace resets ·
+  PgUp/PgDn previous/next · Ctrl+←/→ chapter · ↑/↓ volume · M mute · Shift+L
+  repeat · F/F11 fullscreen · O open file · Ctrl+L open a link · C info card.
+  Right-click the picture for speed presets.
+
+Not yet: Frame Player's torrent settings (seeding, port forwarding, proxy,
+encryption, route — the engine supports them, CedarApple uses the defaults),
+seekbar thumbnails, casting and watch-together. Two older pieces
 still sit in the source but aren't wired to anything: a Seanime client
 (`src/backend/seanime/`) and a small scripting VM for `.pts` plugins
-(`src/extensions/`, documented in [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md)). Both predate this
-UI and would need work before they're worth turning back on.
+(`src/extensions/`, documented in [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md)).
