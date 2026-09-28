@@ -1,11 +1,3 @@
-# Frame Player in CedarApple
-
-CedarApple and [Frame Player](https://github.com/risenxxx/frame-player) are both
-GPL-3.0 (Frame Player: GPL-3.0-or-later, Copyright (c) Evgenii Zakharov), so
-Frame Player's code is used directly rather than reimplemented from its ideas.
-Every ported file names its source at the top.
-
-What can move over, and how, depends on the language:
 
 - **Rust (`src-tauri/`)** is copied. Only the edges change: `#[tauri::command]`
   wrappers become plain functions, `tauri::async_runtime` becomes tokio, and
