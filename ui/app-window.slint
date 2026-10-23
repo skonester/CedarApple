@@ -8,15 +8,17 @@
 
 import { Theme, Fmt, Tip } from "./theme.slint";
 import { AppIcon, StrokeIcon, Ic } from "./icons.slint";
-import { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter } from "./types.slint";
+import { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter, SettingRow } from "./types.slint";
 import { CtlButton, VolumeBar, SeekBar, MenuItem, MenuTitle, MenuPanel } from "./controls.slint";
 import { StartScreen } from "./start.slint";
 import { LinkDialog, PickDialog } from "./dialogs.slint";
 import { MusicDialog, MusicCard, FreeMusicState } from "./music.slint";
+import { SettingsDialog, SettingsState } from "./settings.slint";
 import { Spinner } from "std-widgets.slint";
 
-export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter } from "./types.slint";
+export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter, SettingRow } from "./types.slint";
 export { FreeMusicState } from "./music.slint";
+export { SettingsState } from "./settings.slint";
 
 // A text button in the top bar, for CedarApple's own mpv-side tools.
 component BarTextButton inherits Rectangle {
@@ -83,6 +85,7 @@ export component AppWindow inherits Window {
     callback toggle_info_card(bool);
     callback toggle_hwdec();
     callback close_file();
+    callback take_screenshot();
 
     // ---- Opening things ---------------------------------------------------
     callback open_file();
@@ -100,6 +103,15 @@ export component AppWindow inherits Window {
     in property <float> position: 0;
     in property <float> duration_seconds: 0;
     in property <float> volume: 100;
+
+    // From Settings (src/settings.rs): what the keys, the wheel and the volume bar do.
+    in property <float> volume-max: 100;
+    in property <float> skip-short: 5;
+    in property <float> skip-long: 10;
+    in property <float> volume-step: 5;
+    // "Volume", "Seek" or "Nothing".
+    in property <string> wheel-action: "Volume";
+    in property <bool> wheel-reverse: false;
     in property <bool> is_muted: false;
     in property <float> speed: 1;
     // 0 off, 1 the whole queue, 2 this file.
@@ -184,6 +196,13 @@ export component AppWindow inherits Window {
             key-handler.focus();
         }
     }
+    property <bool> settings-open: SettingsState.open;
+    changed settings-open => {
+        // Back to the keys, unless Settings was opened from Free Music.
+        if (!root.settings-open && !FreeMusicState.open) {
+            key-handler.focus();
+        }
+    }
 
     // Frame Player's default key map (keys.svelte.ts), plus CedarApple's C for
     // the info card and Ctrl+O kept from before.
@@ -197,6 +216,10 @@ export component AppWindow inherits Window {
                 } else if (root.is_fullscreen) {
                     root.toggle_fullscreen();
                 }
+                return accept;
+            }
+            if (event.text == "," && event.modifiers.control) {
+                SettingsState.opened("");
                 return accept;
             }
             if (event.text == "o" || event.text == "O") {
@@ -222,13 +245,13 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.RightArrow && event.modifiers.control) {
                 root.chapter_step(1);
             } else if (event.text == Key.LeftArrow) {
-                root.seek_relative(event.modifiers.shift ? -1 : -5);
+                root.seek_relative(event.modifiers.shift ? -1 : -root.skip-short);
             } else if (event.text == Key.RightArrow) {
-                root.seek_relative(event.modifiers.shift ? 1 : 5);
+                root.seek_relative(event.modifiers.shift ? 1 : root.skip-short);
             } else if (event.text == "j" || event.text == "J") {
-                root.seek_relative(-10);
+                root.seek_relative(-root.skip-long);
             } else if (event.text == "l") {
-                root.seek_relative(10);
+                root.seek_relative(root.skip-long);
             } else if (event.text == "L") {
                 root.cycle_loop();
             } else if (event.text == Key.Home) {
@@ -250,9 +273,11 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.PageDown) {
                 root.playlist_next();
             } else if (event.text == Key.UpArrow) {
-                root.set_volume(Math.min(100, root.volume + 5));
+                root.set_volume(Math.min(root.volume-max, root.volume + root.volume-step));
             } else if (event.text == Key.DownArrow) {
-                root.set_volume(Math.max(0, root.volume - 5));
+                root.set_volume(Math.max(0, root.volume - root.volume-step));
+            } else if (event.text == "s" || event.text == "S") {
+                root.take_screenshot();
             } else if (event.text == "m" || event.text == "M") {
                 root.toggle_mute();
             } else if (event.text == "c") {
@@ -300,11 +325,17 @@ export component AppWindow inherits Window {
                 }
             }
             scroll-event(evt) => {
-                if (root.has_file) {
-                    root.set_volume(Math.max(0, Math.min(100, root.volume + (evt.delta-y > 0 ? 5 : -5))));
-                    return accept;
+                if (!root.has_file || root.wheel-action == "Nothing" || evt.delta-y == 0) {
+                    return reject;
                 }
-                return reject;
+                root.user_activity();
+                let up = (evt.delta-y > 0) != root.wheel-reverse;
+                if (root.wheel-action == "Seek") {
+                    root.seek_relative(up ? root.skip-short : -root.skip-short);
+                } else {
+                    root.set_volume(Math.max(0, Math.min(root.volume-max, root.volume + (up ? root.volume-step : -root.volume-step))));
+                }
+                return accept;
             }
         }
     }
@@ -323,6 +354,7 @@ export component AppWindow inherits Window {
         open-file => { root.open_file(); }
         open-link => { root.open-link(); }
         open-music => { FreeMusicState.opened(); }
+        open-settings => { SettingsState.opened(""); }
         open-torrent(folder) => { root.open_torrent_row(folder); }
         reveal-torrent(folder) => { root.reveal_torrent_row(folder); }
         delete-torrent(folder, watched) => { root.delete_torrent_row(folder, watched); }
@@ -382,6 +414,13 @@ export component AppWindow inherits Window {
                     tip-below: true;
                     clicked => { FreeMusicState.opened(); }
                     StrokeIcon { x: 9px; y: 8px; data: Ic.music; viewbox: 24; size: 18px; color: Theme.text; stroke-width: 1.6px; }
+                }
+                CtlButton {
+                    icon: Ic.tune;
+                    icon-size: 18px;
+                    tip: "Settings (Ctrl+,)";
+                    tip-below: true;
+                    clicked => { SettingsState.opened(""); }
                 }
                 BarTextButton {
                     text: "i";
@@ -557,6 +596,7 @@ export component AppWindow inherits Window {
                         padding-left: 2px;
                         padding-right: 6px;
                         VolumeBar {
+                            maximum: root.volume-max;
                             value: root.is_muted ? 0 : root.volume;
                             tip: "Volume: " + Math.round(root.volume);
                             changed(v) => { root.set_volume(v); }
@@ -778,6 +818,11 @@ export component AppWindow inherits Window {
                 text: "Free music…";
                 clicked => { root.ctx-open = false; FreeMusicState.opened(); }
             }
+            MenuItem {
+                text: "Settings…";
+                note: "Ctrl+,";
+                clicked => { root.ctx-open = false; SettingsState.opened(""); }
+            }
             if root.has_file : MenuItem {
                 text: "Close";
                 clicked => { root.ctx-open = false; root.close_file(); }
@@ -840,5 +885,9 @@ export component AppWindow inherits Window {
 
     if FreeMusicState.open : MusicDialog {
         init => { self.focus-input(); }
+    }
+
+    if SettingsState.open : SettingsDialog {
+        init => { self.focus-keys(); }
     }
 }

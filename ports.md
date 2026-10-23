@@ -43,6 +43,7 @@ dialog of CedarApple's own, reqwest and a JSON file).
 | `ui/music.slint` | `ui/plugins.slint` (`MusicDialog`, `TrackRow`, `NowPlayingCard`) | Rebuilt in CedarApple's dialog look |
 | `src/player/pipeline.rs` (`pick_interop`), `src/main.rs` (update callback, GL reset) | `src/render.rs` | Copied / adapted to the FBO renderer |
 | `src/player/mpv.rs` options | `src/player.rs` (`audio-fallback-to-null`, built-in scripts off) | Copied |
+| `src/settings.rs`, `ui/settings.slint`, `ui/widgets.slint` | `src/config.rs`, `src/settings/{apply,rows,schema}.rs`, `ui/settings.slint` | The categories CedarApple can act on; same options, mpv mappings and wording |
 | `.github/workflows/release.yml`, `packaging/` | `release.yml`, `packaging/appimage`, `packaging/flatpak` | Adapted; Windows keeps the bundled `mpv-dev/libmpv-2.dll` |
 
 ## Next, in order

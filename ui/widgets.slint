@@ -1,0 +1,163 @@
+// Controls the dialogs share: a dropdown, a text box, a switch and a row of
+// segments. Dropdown and Field came with the Free Music port (ui/music.slint);
+// Switch and Segmented draw Vivi's settings rows (ui/settings.slint).
+
+import { Theme } from "./theme.slint";
+import { StrokeIcon, Ic } from "./icons.slint";
+import { MenuItem } from "./controls.slint";
+
+// A choice that opens a list under itself.
+export component Dropdown inherits Rectangle {
+    in property <[string]> options;
+    in property <string> value;
+    callback picked(string);
+
+    height: 32px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: touch.has-hover ? #ffffff38 : #ffffff1f;
+    background: touch.has-hover ? #ffffff12 : #ffffff0a;
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: root.value;
+            color: Theme.text-soft;
+            font-size: 12.5px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            StrokeIcon { data: Ic.chevron-down; size: 12px; stroke-width: 1.5px; color: Theme.text-dim; }
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: Math.max(root.width, 170px);
+        height: menu.preferred-height;
+        Rectangle {
+            background: Theme.menu-bg;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.surface-border;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000080;
+            drop-shadow-offset-y: 6px;
+        }
+        menu := VerticalLayout {
+            padding: 6px;
+            for o in root.options : MenuItem {
+                text: o;
+                selected: o == root.value;
+                clicked => { root.picked(o); }
+            }
+        }
+    }
+}
+
+// A one-line text box with a placeholder.
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <length> inset: 12px;
+    callback accepted();
+    callback edited();
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    height: 36px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent-strong : #ffffff24;
+    background: #ffffff0f;
+    if root.text == "" : Text {
+        x: root.inset;
+        width: parent.width - root.inset - 12px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.muted;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    input := TextInput {
+        x: root.inset;
+        width: parent.width - root.inset - 12px;
+        height: parent.height;
+        text <=> root.text;
+        color: Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+        single-line: true;
+        accepted => { root.accepted(); }
+        edited => { root.edited(); }
+    }
+}
+
+// On / off.
+export component Switch inherits Rectangle {
+    in property <bool> on;
+    callback toggled(bool);
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.on ? Theme.accent-strong : (touch.has-hover ? #ffffff38 : #ffffff24);
+    animate background { duration: 120ms; }
+    Rectangle {
+        x: root.on ? parent.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: white;
+        animate x { duration: 120ms; }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
+// A few options side by side; the chosen one is lit.
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in property <string> value;
+    callback picked(string);
+    height: 30px;
+    width: row.preferred-width + 6px;
+    border-radius: 8px;
+    background: #ffffff0f;
+    row := HorizontalLayout {
+        x: 3px;
+        y: 3px;
+        height: 24px;
+        spacing: 2px;
+        for o in root.options : Rectangle {
+            width: label.preferred-width + 22px;
+            border-radius: 6px;
+            background: o == root.value ? #818cf84d : (touch.has-hover ? #ffffff14 : transparent);
+            label := Text {
+                text: o;
+                color: o == root.value ? Theme.text : Theme.text-dim;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.picked(o); }
+            }
+        }
+    }
+}

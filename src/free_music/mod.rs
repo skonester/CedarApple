@@ -13,8 +13,9 @@
 //! Copyright (c) 2026 Ruslan Popelyshyn; see licenses/MIT-vivi.txt). Vivi runs it
 //! as a plugin inside a shared music dialog and a settings page; here it is one
 //! dialog of its own (ui/music.slint) opened from the start screen, the top bar or
-//! the context menu, with its settings (Jamendo client ID, download folder) behind
-//! the dialog's settings button and kept in `free-music.json` beside history.json.
+//! the context menu. Its settings (Jamendo client ID, download folder) are the Free
+//! Music category of Settings (src/settings.rs), kept in `free-music.json` beside
+//! history.json.
 //! Playback goes through `playback::play_music`, so a song is a queue entry like
 //! any file.
 
@@ -862,7 +863,6 @@ impl Browser {
 
     fn open(&mut self, ui: &AppWindow) {
         let st = ui.global::<FreeMusicState>();
-        st.set_settings_open(false);
         let src: Vec<SharedString> = SOURCES.iter().map(|s| (*s).into()).collect();
         st.set_sources(ModelRc::new(VecModel::from(src)));
         st.set_source(SOURCES[self.q.source].into());
@@ -1025,40 +1025,29 @@ impl Browser {
         self.dl_active = Some((t, p));
     }
 
-    fn show_settings(&self, ui: &AppWindow) {
-        let st = ui.global::<FreeMusicState>();
-        st.set_jamendo_key(self.settings.jamendo_client_id.clone().into());
-        st.set_folder(self.settings.folder.clone().into());
-        st.set_folder_hint(default_folder().to_string_lossy().into_owned().into());
-        st.set_key_from_build(
-            self.settings.jamendo_client_id.trim().is_empty()
-                && !self.settings.jamendo_key().is_empty(),
-        );
-        st.set_settings_open(true);
-    }
-
-    fn save_settings(&mut self, ui: &AppWindow) {
-        let st = ui.global::<FreeMusicState>();
-        let next = Settings {
-            jamendo_client_id: st.get_jamendo_key().trim().to_string(),
-            folder: st.get_folder().trim().to_string(),
-        };
-        st.set_settings_open(false);
-        if next == self.settings {
-            return;
-        }
-        let key_changed = next.jamendo_client_id != self.settings.jamendo_client_id;
-        self.settings = next;
-        self.settings.save();
-        // Another folder holds other downloads.
-        self.saved.clear();
-        self.last = "Settings saved".into();
-        if key_changed {
-            self.q.page = 0;
-            self.run(ui);
-        } else {
-            self.show(ui);
-            self.status(ui);
+    /// Settings → Free Music changed `name` ("jamendo" or "folder").
+    fn set_setting(&mut self, ui: &AppWindow, name: &str, v: &str) {
+        let v = v.trim().to_string();
+        match name {
+            "jamendo" if v != self.settings.jamendo_client_id => {
+                self.settings.jamendo_client_id = v;
+                self.settings.save();
+                // Another key, other results: search again if the browser is up.
+                if ui.global::<FreeMusicState>().get_open() {
+                    self.q.page = 0;
+                    self.run(ui);
+                }
+            }
+            "folder" if v != self.settings.folder => {
+                self.settings.folder = v;
+                self.settings.save();
+                // Another folder holds other downloads.
+                self.saved.clear();
+                if ui.global::<FreeMusicState>().get_open() {
+                    self.show(ui);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1266,6 +1255,23 @@ pub(crate) fn query_box_text(q: &Query) -> String {
     }
 }
 
+/// Settings → Free Music: (Jamendo client ID, download folder, the folder used
+/// while that is empty).
+pub fn settings() -> (String, String, String) {
+    let s = BROWSER.with(|b| b.borrow().as_ref().map(|b| b.settings.clone()));
+    let s = s.unwrap_or_else(Settings::load);
+    (
+        s.jamendo_client_id,
+        s.folder,
+        default_folder().to_string_lossy().into_owned(),
+    )
+}
+
+/// Settings → Free Music changed `name` ("jamendo" or "folder").
+pub fn set_setting(name: &str, v: &str) {
+    with(|b, ui| b.set_setting(ui, name, v));
+}
+
 // ---- Wiring ------------------------------------------------------------------
 
 /// Run `f` with the browser and the window.
@@ -1357,28 +1363,6 @@ pub fn install(ui: &AppWindow) -> slint::Timer {
         })
     });
     st.on_action(|name, i| with(|b, ui| b.action(ui, name.as_str(), i)));
-    st.on_open_settings(|| with(|b, ui| b.show_settings(ui)));
-    st.on_save_settings(|| with(|b, ui| b.save_settings(ui)));
-    st.on_choose_folder(|| {
-        tokio::spawn(async {
-            let picked = tokio::task::spawn_blocking(|| {
-                rfd::FileDialog::new()
-                    .set_title("Free Music download folder")
-                    .pick_folder()
-            })
-            .await
-            .ok()
-            .flatten();
-            let Some(dir) = picked else { return };
-            let dir = dir.to_string_lossy().into_owned();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = window() {
-                    ui.global::<FreeMusicState>().set_folder(dir.into());
-                }
-            });
-        });
-    });
-
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), || {
         with(|b, ui| b.tick(ui))

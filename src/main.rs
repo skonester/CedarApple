@@ -16,6 +16,7 @@ mod net_route;
 mod player;
 mod playback;
 mod scrub;
+mod settings;
 mod torrent;
 mod torrent_storage;
 mod torrent_ui;
@@ -271,6 +272,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Everything between the window and mpv: controls, the torrent flow,
     // the queue, history. See src/playback.rs.
+    // Settings first: mpv's options are set before anything opens.
+    settings::install(&ui, mpv.clone());
     let timers = playback::install(&ui, mpv.clone(), state.clone(), discord.clone());
     // The Free Music browser (src/free_music), which plays through playback.
     let music_timer = free_music::install(&ui);

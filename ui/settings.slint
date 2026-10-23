@@ -1,0 +1,227 @@
+// The Settings dialog: categories on the left, their rows on the right.
+//
+// Ported from Vivi's settings page (ui/settings.slint and the row kinds of
+// src/settings/rows.rs; MIT, Copyright (c) 2026 Ruslan Popelyshyn): headers,
+// switches, dropdowns, segments, sliders, text boxes, folder pickers and action
+// buttons, drawn in CedarApple's dialog look. The rows come from Rust
+// (src/settings.rs), which applies a change the moment it is made.
+
+import { Theme } from "./theme.slint";
+import { SettingRow } from "./types.slint";
+import { DialogFrame, DialogButton } from "./dialogs.slint";
+import { Dropdown, Field, Switch, Segmented } from "./widgets.slint";
+import { ScrollView, Slider } from "std-widgets.slint";
+
+export global SettingsState {
+    in-out property <bool> open;
+    in-out property <[string]> categories;
+    in-out property <string> category;
+    in-out property <[SettingRow]> rows;
+    // A line under the rows after an action ("Resume positions cleared.").
+    in-out property <string> note;
+    // Open the dialog on a category ("" = the last one shown).
+    callback opened(string);
+    callback pick(string);
+    // (setting id, new value)
+    callback changed(string, string);
+    callback action(string);
+}
+
+component SettingLine inherits VerticalLayout {
+    in property <SettingRow> line;
+
+    if root.line.kind == "header" : VerticalLayout {
+        padding-top: 16px;
+        padding-bottom: 2px;
+        Text {
+            text: root.line.title;
+            color: Theme.menu-title;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.9px;
+        }
+    }
+
+    if root.line.kind != "header" : HorizontalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 16px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 3px;
+            Text {
+                text: root.line.title;
+                color: Theme.text;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.line.info != "" : Text {
+                text: root.line.info;
+                color: Theme.muted;
+                font-size: 11.5px;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            width: 290px;
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                if root.line.kind == "toggle" : Switch {
+                    on: root.line.value == "true";
+                    toggled(v) => { SettingsState.changed(root.line.id, v ? "true" : "false"); }
+                }
+                if root.line.kind == "choice" : Dropdown {
+                    width: 220px;
+                    options: root.line.options;
+                    value: root.line.value;
+                    picked(o) => { SettingsState.changed(root.line.id, o); }
+                }
+                if root.line.kind == "seg" : Segmented {
+                    options: root.line.options;
+                    value: root.line.value;
+                    picked(o) => { SettingsState.changed(root.line.id, o); }
+                }
+                if root.line.kind == "text" : text-box := Field {
+                    width: 240px;
+                    height: 32px;
+                    text: root.line.value;
+                    placeholder: root.line.options.length > 0 ? root.line.options[0] : "";
+                    edited => { SettingsState.changed(root.line.id, text-box.text); }
+                }
+                if root.line.kind == "path" : path-box := Field {
+                    width: 196px;
+                    height: 32px;
+                    text: root.line.value;
+                    edited => { SettingsState.changed(root.line.id, path-box.text); }
+                }
+                if root.line.kind == "path" : DialogButton {
+                    text: "Choose…";
+                    clicked => { SettingsState.action(root.line.id + ".choose"); }
+                }
+                if root.line.kind == "action" : DialogButton {
+                    text: root.line.value;
+                    clicked => { SettingsState.action(root.line.id); }
+                }
+                // A drag detaches the slider's value from the row, so changes
+                // from Rust (Reset picture) are pushed into it.
+                if root.line.kind == "slider" : Rectangle {
+                    width: 228px;
+                    height: 28px;
+                    property <float> model-num: root.line.num;
+                    changed model-num => { knob.value = self.model-num; }
+                    knob := Slider {
+                        width: parent.width;
+                        height: parent.height;
+                        minimum: root.line.min;
+                        maximum: root.line.max;
+                        value: root.line.num;
+                        changed(v) => {
+                            SettingsState.changed(root.line.id, Math.round(v / root.line.step) * root.line.step);
+                        }
+                    }
+                }
+                if root.line.kind == "slider" : Text {
+                    width: 52px;
+                    text: root.line.display;
+                    color: Theme.text-soft;
+                    font-size: 12px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// A category in the left column.
+component CategoryButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 32px;
+    border-radius: 8px;
+    background: root.active ? #818cf833 : (touch.has-hover ? Theme.menu-hover : transparent);
+    Text {
+        x: 12px;
+        text: root.text;
+        color: root.active ? Theme.text : Theme.text-dim;
+        font-size: 13px;
+        font-weight: root.active ? 600 : 400;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SettingsDialog inherits Rectangle {
+    public function focus-keys() {
+        keys.focus();
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                SettingsState.open = false;
+                return accept;
+            }
+            return reject;
+        }
+
+        DialogFrame {
+            title: "Settings";
+            panel-width: 920px;
+            body-height: 620px;
+            close => { SettingsState.open = false; }
+
+            HorizontalLayout {
+                spacing: 16px;
+
+                VerticalLayout {
+                    width: 168px;
+                    spacing: 2px;
+                    alignment: start;
+                    for c in SettingsState.categories : CategoryButton {
+                        text: c;
+                        active: c == SettingsState.category;
+                        clicked => { SettingsState.pick(c); }
+                    }
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: #ffffff14;
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 8px;
+                    sv := ScrollView {
+                        vertical-stretch: 1;
+                        // A new category starts at its top.
+                        property <string> cat: SettingsState.category;
+                        changed cat => { self.viewport-y = 0; }
+                        viewport-width: self.visible-width;
+                        viewport-height: col.preferred-height;
+                        col := VerticalLayout {
+                            width: sv.visible-width - 14px;
+                            alignment: start;
+                            for r in SettingsState.rows : SettingLine {
+                                line: r;
+                            }
+                        }
+                    }
+                    if SettingsState.note != "" : Text {
+                        text: SettingsState.note;
+                        color: Theme.accent;
+                        font-size: 12px;
+                    }
+                }
+            }
+        }
+    }
+}

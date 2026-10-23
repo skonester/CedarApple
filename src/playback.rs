@@ -37,8 +37,10 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long the chrome stays up after the pointer stops.
-const IDLE_AFTER: Duration = Duration::from_secs(3);
+/// How long the chrome stays up after the pointer stops (Settings → Interface).
+fn idle_after() -> Duration {
+    Duration::from_secs(crate::settings::AUTOHIDE_SECS.load(std::sync::atomic::Ordering::Relaxed) as u64)
+}
 /// How long an OSD message stays up.
 const OSD_FOR: Duration = Duration::from_millis(1200);
 /// How often the position of what is playing is written down.
@@ -152,6 +154,10 @@ impl Ctx {
         let Some(item) = self.current().filter(|i| !i.id.is_empty()) else {
             return;
         };
+        // Settings → "Remember the playback position" off: nothing is written down.
+        if !crate::settings::get().playback.resume {
+            return;
+        }
         let (Some(pos), Some(dur)) = (
             self.mpv.get_double("time-pos"),
             self.mpv.get_double("duration"),
@@ -364,6 +370,7 @@ impl Ctx {
 
         let Some(item) = self.current() else { return };
         if !item.id.is_empty()
+            && crate::settings::get().playback.resume
             && let Some(p) = history::position(&item.id)
             && p.pos > RESUME_MIN_S
             && (p.dur <= 0.0 || p.pos / p.dur < history::FINISHED_FRACTION)
@@ -410,20 +417,22 @@ impl Ctx {
     }
 
     fn set_volume(&self, value: f64) {
-        let v = value.clamp(0.0, 100.0).round();
+        // Up to Settings → Audio → Maximum volume (mpv volume-max).
+        let max = self.mpv.get_double("volume-max").unwrap_or(100.0).max(100.0);
+        let v = value.clamp(0.0, max).round();
         self.mpv.set_double("volume", v);
         self.mpv.set_flag("mute", false);
         self.with_ui(|ui| {
             ui.set_volume(v as f32);
             ui.set_is_muted(false);
         });
-        self.osd(&format!("Volume: {v}"), Some(v / 100.0));
+        self.osd(&format!("Volume: {v}"), Some(v / max));
     }
 
     /// The 16 ms tick: mpv's events every time, playback readouts at 10 Hz.
     #[allow(non_upper_case_globals)]
     fn tick(&self, ui: &AppWindow) {
-        let visible = self.last_activity.get().elapsed() < IDLE_AFTER
+        let visible = self.last_activity.get().elapsed() < idle_after()
             || ui.get_is_paused()
             || ui.get_is_scrubbing()
             || ui.get_keep_chrome()
@@ -486,7 +495,8 @@ impl Ctx {
         }
         ui.set_duration_seconds(dur.max(0.0) as f32);
         ui.set_is_paused(paused);
-        ui.set_volume(mpv.get_double("volume").unwrap_or(100.0).clamp(0.0, 100.0) as f32);
+        let max = mpv.get_double("volume-max").unwrap_or(100.0).max(100.0);
+        ui.set_volume(mpv.get_double("volume").unwrap_or(100.0).clamp(0.0, max) as f32);
         ui.set_is_muted(mpv.get_flag("mute"));
         ui.set_speed(mpv.get_double("speed").unwrap_or(1.0) as f32);
         ui.set_stalled(mpv.get_flag("paused-for-cache"));
@@ -1014,7 +1024,11 @@ pub fn install(
         last_presence: Cell::new(Instant::now()),
         last_playlist_pos: Cell::new(-2),
         had_file: Cell::new(false),
-        loop_mode: Cell::new(0),
+        loop_mode: Cell::new(match crate::settings::get().playback.repeat.as_str() {
+            "All" => 1,
+            "One" => 2,
+            _ => 0,
+        }),
         peerless_since: Cell::new(None),
         subs_attached_for: RefCell::new(String::new()),
         prefetched: RefCell::new(HashSet::new()),
@@ -1196,6 +1210,7 @@ pub fn install(
         c.loop_mode.set(next);
         c.mpv.set_property_string("loop-file", if next == 2 { "inf" } else { "no" });
         c.mpv.set_property_string("loop-playlist", if next == 1 { "inf" } else { "no" });
+        crate::settings::remember_repeat(next);
         c.with_ui(|ui| ui.set_loop_mode(next));
         c.osd(
             ["Repeat: off", "Repeat: all", "Repeat: one"][next as usize],
@@ -1251,6 +1266,13 @@ pub fn install(
 
     ui.on_user_activity(|| ctx().last_activity.set(Instant::now()));
 
+    // S: a snapshot into Settings → Video → Snapshots.
+    ui.on_take_screenshot(|| {
+        let c = ctx();
+        let ok = c.mpv.command(&["screenshot"]);
+        c.osd(if ok { "Snapshot saved" } else { "No snapshot" }, None);
+    });
+
     ui.on_toggle_info_card(|lean| {
         // spincard registers both bindings under its own script name; the
         // lean variant hides whatever `lean_hide` lists (the synopsis, by
@@ -1274,6 +1296,7 @@ pub fn install(
         // (as Vivi does), never the ones known to corrupt frames.
         let next = if current == "no" || current.is_empty() { "auto-safe" } else { "no" };
         c.mpv.set_property_string("hwdec", next);
+        crate::settings::remember_hwdec(next);
         c.osd(&format!("hwdec: {next}…"), None);
         // "auto-safe" is a request, not an outcome - mpv picks (or refuses) a
         // decoder when the video re-inits, so read hwdec-current back a beat

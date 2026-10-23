@@ -8,7 +8,7 @@
 // background art behind it.
 
 import { Theme, Tip } from "./theme.slint";
-import { StrokeIcon, Ic } from "./icons.slint";
+import { AppIcon, StrokeIcon, Ic } from "./icons.slint";
 import { TorrentRowData } from "./types.slint";
 import { Spinner } from "std-widgets.slint";
 
@@ -132,6 +132,8 @@ export component StartScreen inherits Rectangle {
     callback open-link();
     // The Free Music browser (ui/music.slint).
     callback open-music();
+    // The Settings dialog (ui/settings.slint).
+    callback open-settings();
     callback open-torrent(string);
     callback reveal-torrent(string);
     // (folder, watched only)
@@ -151,6 +153,34 @@ export component StartScreen inherits Rectangle {
     }
     Rectangle {
         background: #000000b8;
+    }
+
+    // Settings, top right.
+    Rectangle {
+        x: parent.width - self.width - 16px;
+        y: 16px;
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        background: gear-touch.has-hover ? Theme.hover : transparent;
+        AppIcon {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            data: Ic.tune;
+            size: 20px;
+            color: Theme.text-soft;
+        }
+        gear-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open-settings(); }
+        }
+        Tip {
+            text: "Settings (Ctrl+,)";
+            show: gear-touch.has-hover;
+            align: 1;
+            anchor-width: parent.width;
+            y: parent.height + 8px;
+        }
     }
 
     // Clicking anywhere else closes the delete menu.

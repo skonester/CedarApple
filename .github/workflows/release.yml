@@ -38,6 +38,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Every JavaScript action runs on Node 24, including any not yet released for it.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   meta:
@@ -46,7 +48,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       ver: ${{ steps.meta.outputs.ver }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Work out the release name
         id: meta
         run: |
@@ -68,7 +70,7 @@ jobs:
     env:
       VER: ${{ needs.meta.outputs.ver }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Add swap (the LTO release link of the Slint UI needs more than the runner's RAM)
         run: |
           sudo fallocate -l 10G /swapfile.cedar && sudo chmod 600 /swapfile.cedar
@@ -89,7 +91,7 @@ jobs:
           shared-key: release-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Slim libmpv (FFmpeg decoders only, no mpv CLI) for the AppImage; cached by script hash.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: deps
         with:
           path: deps
@@ -99,7 +101,7 @@ jobs:
         run: PREFIX=$PWD/deps SRC=$RUNNER_TEMP/deps-src bash packaging/appimage/build-libmpv.sh
       - name: Save slim libmpv
         if: steps.deps.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: deps
           key: ${{ steps.deps.outputs.cache-primary-key }}
@@ -127,7 +129,7 @@ jobs:
           ! LD_LIBRARY_PATH=squashfs-root/usr/lib ldd squashfs-root/usr/bin/cedarapple | grep "not found"
           test -f squashfs-root/usr/share/cedarapple/mpv/scripts/spincard/main.lua
           ls -la dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/*
@@ -138,7 +140,7 @@ jobs:
     env:
       VER: ${{ needs.meta.outputs.ver }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -169,7 +171,7 @@ jobs:
           # 7-Zip's maximum Deflate is smaller than Compress-Archive and still a plain zip.
           7z a -tzip -mx=9 -mfb=258 "dist/$name.zip" $name | Out-Null
           Get-ChildItem dist | Format-Table Name, Length
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/*
@@ -178,7 +180,7 @@ jobs:
   cargo-sources:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: flatpak-cargo-generator
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
@@ -187,7 +189,7 @@ jobs:
             https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
           "$RUNNER_TEMP/venv/bin/python" "$RUNNER_TEMP/flatpak-cargo-generator.py" Cargo.lock -o cargo-sources.json
           test -s cargo-sources.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cargo-sources
           path: cargo-sources.json
@@ -201,8 +203,8 @@ jobs:
     env:
       VER: ${{ needs.meta.outputs.ver }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cargo-sources
           path: packaging/flatpak
@@ -232,7 +234,7 @@ jobs:
           upload-artifact: false
       - name: Name the bundle
         run: mkdir -p dist && mv cedarapple.flatpak "dist/cedarapple-${VER}-x86_64.flatpak"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: flatpak
           path: dist/*
@@ -245,7 +247,7 @@ jobs:
     env:
       TAG: ${{ needs.meta.outputs.tag }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: "{linux,windows,flatpak}"
           path: dist

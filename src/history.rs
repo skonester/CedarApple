@@ -184,6 +184,13 @@ pub fn position(id: &str) -> Option<Position> {
     store().lock().unwrap().positions.get(id).cloned()
 }
 
+/// Forget every resume position (Settings → Privacy). The torrents stay.
+pub fn clear_positions() {
+    let mut s = store().lock().unwrap();
+    s.positions.clear();
+    save(&s);
+}
+
 /// Every position saved for one torrent, by file index.
 pub fn torrent_positions(info_hash: &str) -> HashMap<usize, Position> {
     let prefix = format!("torrent:{}/", info_hash.to_ascii_lowercase());

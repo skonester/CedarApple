@@ -38,6 +38,24 @@ export struct TorrentRowData {
     watched: int,
 }
 
+// A row of the Settings dialog (src/settings.rs builds them). `kind`: header,
+// toggle, choice, seg, slider, text, path or action; `options` are a choice's
+// or segment's values, a text box's placeholder; `num`/`min`/`max`/`step` and
+// `display` are a slider's.
+export struct SettingRow {
+    id: string,
+    kind: string,
+    title: string,
+    info: string,
+    value: string,
+    display: string,
+    options: [string],
+    num: float,
+    min: float,
+    max: float,
+    step: float,
+}
+
 // A Free Music result row (src/free_music): cover, title, artist · album,
 // source badge, licence chip (green when commercial use is allowed), length.
 export struct FmRow {

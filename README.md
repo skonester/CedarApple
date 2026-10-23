@@ -68,9 +68,17 @@ streaming:
   genre chips, mood / licence / length filters, sort, album and artist pages,
   "similar" radio, the licence on every track. Play or queue a song, or
   download it with tags, cover and a `.licence.txt` (it then plays from disk).
-  The settings button holds the Jamendo client ID (free at
+  Settings → Free Music holds the Jamendo client ID (free at
   devportal.jamendo.com; without one only the Internet Archive is searched)
   and the download folder. Also in the top bar and the right-click menu.
+- **Settings** (gear on the start screen and in the top bar, Ctrl+,): Vivi's
+  settings menu for what CedarApple has. Playback (hardware decoding, default
+  speed, repeat, precise seek, resume), Video (picture, deinterlacing, aspect,
+  snapshots), Audio (device, maximum and startup volume, loudness, language,
+  delay), Subtitles (language, encoding, auto-load, font, size, colours,
+  outline, shadow, position), Controls (skip and volume steps, scroll wheel),
+  Network, Performance, Privacy, General (mpv log) and Free Music. Changes
+  apply at once and are kept in `settings.json`.
 - **Controls**: drag-to-seek that shows the frame under the pointer and lands
   exactly where you let go, chapter marks and names, queue, chapter, audio and
   subtitle menus, repeat (off/all/one), volume, speed, fullscreen, an on-screen
@@ -78,7 +86,8 @@ streaming:
 - **Keys** (Frame Player's map): Space/K pause · ←/→ 5 s (Shift: 1 s) · J/L
   10 s · Home/End · , / . frame step · [ / ] speed, Backspace resets ·
   PgUp/PgDn previous/next · Ctrl+←/→ chapter · ↑/↓ volume · M mute · Shift+L
-  repeat · F/F11 fullscreen · O open file · Ctrl+L open a link · C info card.
+  repeat · F/F11 fullscreen · O open file · Ctrl+L open a link · C info card ·
+  S snapshot · Ctrl+, settings. Skip and volume steps are set in Settings.
   Right-click the picture for speed presets.
 
 Not yet: Frame Player's torrent settings (seeding, port forwarding, proxy,

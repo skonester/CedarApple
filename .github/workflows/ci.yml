@@ -15,12 +15,14 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Every JavaScript action runs on Node 24, including any not yet released for it.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System deps
         run: |
           sudo apt-get update
@@ -36,7 +38,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
