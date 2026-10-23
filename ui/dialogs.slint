@@ -9,7 +9,7 @@ import { PickFile } from "./types.slint";
 import { Spinner } from "std-widgets.slint";
 
 // The sheet every dialog sits on: a dimmed backdrop, a panel, a title and ×.
-component DialogFrame inherits Rectangle {
+export component DialogFrame inherits Rectangle {
     in property <string> title;
     in property <length> panel-width: 520px;
     in property <length> body-height;
@@ -77,7 +77,7 @@ component DialogFrame inherits Rectangle {
     }
 }
 
-component DialogButton inherits Rectangle {
+export component DialogButton inherits Rectangle {
     in property <string> text;
     in property <bool> primary;
     in property <bool> enabled: true;

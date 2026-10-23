@@ -25,11 +25,17 @@ lists them. The vendored librqbit crates are Apache-2.0
 ([licenses/Apache-2.0.txt](licenses/Apache-2.0.txt), changes described in
 [vendor/README-librqbit.md](vendor/README-librqbit.md)).
 
+The Free Music browser (`src/free_music/`, `ui/music.slint`), the render and
+mpv tweaks it came with, and the Linux packaging are ported from
+[Vivi](https://github.com/Loafer19/vivi) (Copyright (c) 2026 Ruslan
+Popelyshyn, MIT; notice in [licenses/MIT-vivi.txt](licenses/MIT-vivi.txt)).
+
 ## Building
 
 Needs Rust (via [rustup](https://rustup.rs/)) and `libmpv`:
 
-- **Linux**: `sudo apt install libmpv-dev` (or `pacman -S mpv`).
+- **Linux**: `sudo apt install libmpv-dev libxkbcommon-dev libfontconfig1-dev`
+  (or `pacman -S mpv`).
 - **macOS**: `brew install mpv`.
 - **Windows**: this repo already ships a working `mpv-dev/` folder (the ~100MB
   `libmpv-2.dll` plus an `mpv.lib` built from it) - `cargo build --release` just picks it
@@ -46,8 +52,8 @@ cargo run --release
 A Slint player over libmpv with Frame Player's controls and its torrent
 streaming:
 
-- **Start screen**: open a file, or open a link — a magnet, a `.torrent`, or
-  any URL mpv plays. Torrents already on disk are listed with their size and
+- **Start screen**: open a file, open a link — a magnet, a `.torrent`, or
+  any URL mpv plays — or browse free music. Torrents already on disk are listed with their size and
   where you left off; click one to continue, or delete it (just the watched
   episodes, or everything).
 - **Torrent streaming**: a magnet resolves to its file list, you pick what to
@@ -57,6 +63,14 @@ streaming:
   shades what is already on disk; a readout top-right gives peers and speed
   and says when playback is waiting for data. Data lives in the app's cache
   folder (`%LOCALAPPDATA%\CedarApple\cache\torrents` on Windows).
+- **Free Music**: search and browse Creative Commons and public-domain music
+  from Jamendo and the Internet Archive (with its Free Music Archive mirror):
+  genre chips, mood / licence / length filters, sort, album and artist pages,
+  "similar" radio, the licence on every track. Play or queue a song, or
+  download it with tags, cover and a `.licence.txt` (it then plays from disk).
+  The settings button holds the Jamendo client ID (free at
+  devportal.jamendo.com; without one only the Internet Archive is searched)
+  and the download folder. Also in the top bar and the right-click menu.
 - **Controls**: drag-to-seek that shows the frame under the pointer and lands
   exactly where you let go, chapter marks and names, queue, chapter, audio and
   subtitle menus, repeat (off/all/one), volume, speed, fullscreen, an on-screen
@@ -73,3 +87,9 @@ seekbar thumbnails, casting and watch-together. Two older pieces
 still sit in the source but aren't wired to anything: a Seanime client
 (`src/backend/seanime/`) and a small scripting VM for `.pts` plugins
 (`src/extensions/`, documented in [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md)).
+
+## Releases
+
+Pushing a tag `vX.Y.Z` runs [.github/workflows/release.yml](.github/workflows/release.yml),
+which publishes a Windows zip (with the bundled `libmpv-2.dll`), a Linux
+tarball, an AppImage and a Flatpak. See [packaging/README.md](packaging/README.md).

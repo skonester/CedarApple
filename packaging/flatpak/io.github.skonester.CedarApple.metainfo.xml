@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.skonester.CedarApple</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>CedarApple</name>
+  <summary>Video player with torrent streaming and free music</summary>
+  <developer id="io.github.skonester">
+    <name>skonester</name>
+  </developer>
+  <description>
+    <p>
+      CedarApple is a small video player built on mpv and Slint. It plays a file or
+      any link mpv opens, and streams torrents while they download.
+    </p>
+    <ul>
+      <li>Torrent streaming: only the file you watch is fetched, the rest of a season queues around it</li>
+      <li>Drag-to-seek on the exact frame, chapters, audio and subtitle tracks, resume where you left off</li>
+      <li>Free Music: search and play Creative Commons music from Jamendo and the Internet Archive, and download it with its licence</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.skonester.CedarApple.desktop</launchable>
+  <url type="homepage">https://github.com/skonester/CedarApple</url>
+  <url type="bugtracker">https://github.com/skonester/CedarApple/issues</url>
+  <url type="vcs-browser">https://github.com/skonester/CedarApple</url>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Player</category>
+  </categories>
+  <releases>
+    <release version="0.4.0" date="2026-10-23"/>
+  </releases>
+</component>

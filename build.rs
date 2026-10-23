@@ -1,5 +1,8 @@
 fn main() {
-    slint_build::compile("ui/app-window.slint").expect("Slint build failed");
+    // The std widgets CedarApple uses (Spinner, the Free Music list's
+    // ScrollView) drawn dark whatever the system theme, to match the UI.
+    let config = slint_build::CompilerConfiguration::new().with_style("fluent-dark".into());
+    slint_build::compile_with_config("ui/app-window.slint", config).expect("Slint build failed");
 
     copy_mpv_assets();
 

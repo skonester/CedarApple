@@ -1,6 +1,6 @@
 [package]
 name = "cedarapple"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2024"
 
 authors = ["tfo-dot"]
@@ -26,11 +26,16 @@ libloading = "0.9.0"
 urlencoding = "2.1.3"
 discord-rich-presence = "1.1.0"
 thiserror = "2.0.20"
-parts = { git = "https://github.com/tfo-dot/parts-rs.git" }
+# tfo-dot/parts-rs, vendored. A path, not a git dependency patched to the
+# path: the result is the same, and offline builds (the Flatpak) never look
+# for the git repository.
+parts = { path = "vendor/parts-rs" }
 rustc-hash = "2.1.3"
 tokio-tungstenite = "0.26.2"
 url = "2.5.8"
 rfd = "0.17.2"
+# Free Music downloads (src/free_music): title, artist, licence and cover tags.
+lofty = "0.25.4"
 
 # Torrent streaming, ported from Frame Player (src/torrent.rs). librqbit is the
 # stable 9.x line with `disable-upload`, which is what makes "seeding off" a
@@ -52,6 +57,16 @@ slint-build = "1.17.1"
 [profile.release]
 codegen-units = 1
 lto = true
+# Symbols out of the shipped binary (Vivi does the same): a much smaller exe.
+strip = true
+
+# CI build checks (ci.yml): release optimisations without the long fat-LTO link.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = false
+debug = 0
 
 [target.'cfg(windows)'.dependencies]
 # net_route (the adapter list) and torrent_storage (sparse files on NTFS).
@@ -68,9 +83,6 @@ windows-sys = { version = "0.61.2", features = [
 librqbit = { path = "vendor/librqbit" }
 librqbit-dht = { path = "vendor/librqbit-dht" }
 librqbit-dualstack-sockets = { path = "vendor/librqbit-dualstack-sockets" }
-
-[patch."https://github.com/tfo-dot/parts-rs.git"]
-parts = { path = "vendor/parts-rs" }
 
 [target."cfg(windows)".build-dependencies]
 embed-resource = "3.0.11"

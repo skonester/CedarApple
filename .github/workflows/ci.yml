@@ -1,0 +1,46 @@
+# Builds and tests every push to main and every pull request, on Linux and
+# Windows, with the `ci` profile (release optimisations without the long LTO
+# link; Cargo.toml). The release builds themselves are release.yml's.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmpv-dev libxkbcommon-dev libfontconfig1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --profile ci --locked
+      - run: cargo test --profile ci --locked
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --profile ci --locked
+      - run: cargo test --profile ci --locked

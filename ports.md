@@ -28,6 +28,23 @@
 Both network tests run here as they do in Frame Player:
 `FP_TEST_MAGNET=1 cargo test sintel_smoke -- --nocapture`.
 
+## Ported from Vivi
+
+[Vivi](https://github.com/Loafer19/vivi) (MIT, Copyright (c) 2026 Ruslan
+Popelyshyn) is Rust + Slint + libmpv already, so its code is copied; only the
+host around it changes (its plugin system, ureq and settings pages become a
+dialog of CedarApple's own, reqwest and a JSON file).
+
+| CedarApple | From Vivi | How |
+| --- | --- | --- |
+| `src/free_music/catalog.rs`, `api.rs` | `src/plugins/free_music/catalog.rs`, `api.rs` | Copied (searches, licences, merge, download), tests and fixtures too |
+| `src/free_music/mod.rs` | `src/plugins/free_music/mod.rs` | The plugin as a standalone controller; settings in `free-music.json` |
+| `src/free_music/tags.rs`, `web.rs` | `plugins/auto_tagger` (`write_tags`), `plugins/web.rs` | The parts Free Music uses, on reqwest |
+| `ui/music.slint` | `ui/plugins.slint` (`MusicDialog`, `TrackRow`, `NowPlayingCard`) | Rebuilt in CedarApple's dialog look |
+| `src/player/pipeline.rs` (`pick_interop`), `src/main.rs` (update callback, GL reset) | `src/render.rs` | Copied / adapted to the FBO renderer |
+| `src/player/mpv.rs` options | `src/player.rs` (`audio-fallback-to-null`, built-in scripts off) | Copied |
+| `.github/workflows/release.yml`, `packaging/` | `release.yml`, `packaging/appimage`, `packaging/flatpak` | Adapted; Windows keeps the bundled `mpv-dev/libmpv-2.dll` |
+
 ## Next, in order
 
 1. **Torrent settings.** `TorrentService` already has `set_seeding`,

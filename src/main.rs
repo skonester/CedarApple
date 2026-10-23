@@ -8,6 +8,7 @@ mod app_state;
 mod backend;
 mod discord;
 mod extensions;
+mod free_music;
 mod image_cache;
 mod history;
 mod navigation;
@@ -33,6 +34,24 @@ use std::os::raw::{c_char, c_void};
 use std::ptr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+
+thread_local! {
+    /// Asks for a repaint when mpv has a new frame (see `on_render_update`).
+    static REDRAW: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// mpv's render update callback, as Vivi's render.rs sets one: a new frame is
+/// ready, so paint now instead of at the next 16 ms tick. It runs on an mpv
+/// thread and may not call into mpv, so it only hands the UI thread a nudge.
+unsafe extern "C" fn on_render_update(_: *mut c_void) {
+    let _ = slint::invoke_from_event_loop(|| {
+        REDRAW.with(|r| {
+            if let Some(f) = r.borrow().as_ref() {
+                f();
+            }
+        })
+    });
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -88,6 +107,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .set_rendering_notifier(move |rendering_state, api| match rendering_state {
                 slint::RenderingState::RenderingSetup => {
                     if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = api {
+                        // Linux: only the hwdec interop that matches the GL
+                        // driver; mpv reads it when the context is made.
+                        let (vendor, renderer) = player::gl_strings(get_proc_address);
+                        if let Some(interop) = player::pick_interop("auto-safe", &vendor, &renderer) {
+                            mpv_h.set_property_string("gpu-hwdec-interop", &interop);
+                        }
                         let api_type = CString::new("opengl").unwrap();
                         let mut init_params = mpv_opengl_init_params {
                             get_proc_address: Some(get_proc_address_mpv),
@@ -114,6 +139,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             mpv_render_context_create(&mut ctx, mpv_h.get(), params.as_mut_ptr())
                         };
                         if res >= 0 {
+                            unsafe {
+                                mpv_render_context_set_update_callback(
+                                    ctx,
+                                    Some(on_render_update),
+                                    ptr::null_mut(),
+                                );
+                            }
                             *mpv_r.borrow_mut() = Some(MpvRenderCtx(ctx));
                             eprintln!("[CedarApple] MPV Render Context created successfully");
                         } else {
@@ -182,6 +214,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     res.gl.disable(glow::STENCIL_TEST);
                                     res.gl.disable(glow::CULL_FACE);
                                     res.gl.disable(glow::BLEND);
+                                    // ...and the bindings it leaves after uploading
+                                    // images (Free Music covers): a texture, a program,
+                                    // buffers, pixel-store settings. Vivi found these
+                                    // turn mpv's frame black (render.rs, GlReset).
+                                    res.gl.active_texture(glow::TEXTURE0);
+                                    res.gl.bind_texture(glow::TEXTURE_2D, None);
+                                    res.gl.use_program(None);
+                                    res.gl.bind_buffer(glow::ARRAY_BUFFER, None);
+                                    if res.gl.version().major >= 3 {
+                                        res.gl.bind_vertex_array(None);
+                                        res.gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
+                                        res.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+                                        res.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+                                    }
+                                    res.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
+                                    res.gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
                                     res.gl.clear_color(0.0, 0.0, 0.0, 1.0);
                                     res.gl.clear(glow::COLOR_BUFFER_BIT);
 
@@ -224,9 +272,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Everything between the window and mpv: controls, the torrent flow,
     // the queue, history. See src/playback.rs.
     let timers = playback::install(&ui, mpv.clone(), state.clone(), discord.clone());
+    // The Free Music browser (src/free_music), which plays through playback.
+    let music_timer = free_music::install(&ui);
 
-    // Rendering needs a fast tick; playback readouts are polled at 10 Hz
-    // inside `playback::tick`.
+    // A frame from mpv's update callback is painted at once.
+    {
+        let ui_w = ui.as_weak();
+        let mpv_r = mpv_render.clone();
+        REDRAW.with(|r| {
+            *r.borrow_mut() = Some(Box::new(move || {
+                if let Some(rctx) = mpv_r.borrow().as_ref()
+                    && (unsafe { mpv_render_context_update(rctx.get()) } & 1) != 0
+                    && let Some(ui) = ui_w.upgrade()
+                {
+                    ui.window().request_redraw();
+                }
+            }))
+        });
+    }
+
+    // Rendering needs a fast tick as a fallback (and for mpv's events);
+    // playback readouts are polled at 10 Hz inside `playback::tick`.
     let ui_render = ui.as_weak();
     let mpv_r = mpv_render.clone();
     let render_timer = slint::Timer::default();
@@ -282,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[CedarApple] Event loop exited.");
     playback::shutdown();
     drop(timers);
+    drop(music_timer);
 
     MpvHandle::stop(&mpv);
     Ok(result?)

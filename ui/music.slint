@@ -1,0 +1,875 @@
+// The Free Music browser, its settings, and the card shown while a song plays.
+//
+// Ported from Vivi's music dialog (ui/plugins.slint: MusicDialog, TrackRow,
+// NowPlayingCard; MIT, Copyright (c) 2026 Ruslan Popelyshyn): the same rows,
+// chips, filters, detail pane and footer actions, drawn in CedarApple's dialog
+// look. What a click does is Rust's (src/free_music); this file shows the
+// state it keeps in FreeMusicState.
+
+import { Theme } from "./theme.slint";
+import { AppIcon, StrokeIcon, Ic } from "./icons.slint";
+import { FmRow, FmFilter } from "./types.slint";
+import { MenuItem } from "./controls.slint";
+import { DialogFrame, DialogButton } from "./dialogs.slint";
+import { ScrollView, Spinner } from "std-widgets.slint";
+
+export global FreeMusicState {
+    in-out property <bool> open;
+    in-out property <string> title: "Free Music";
+    in-out property <string> status;
+    // A search is running.
+    in-out property <bool> busy;
+    in-out property <[string]> sources;
+    in-out property <string> source;
+    in-out property <string> query;
+    in-out property <[string]> chips;
+    in-out property <string> chip;
+    in-out property <[FmFilter]> filters;
+    in-out property <[FmRow]> tracks;
+    // Scrolling near the end asks for the next page.
+    in-out property <bool> has-more;
+    // Highlighted row (-1 = none). Rust moves it when rows are re-sorted.
+    in-out property <int> selected: -1;
+    in-out property <string> detail;
+    in-out property <image> detail-cover;
+    in-out property <bool> has-detail-cover;
+    // Footer buttons beside Download / Play (Back, Queue, Similar, Album, …).
+    in-out property <[string]> actions;
+    // "Download", or "Preview only" when the artist allows streaming only.
+    in-out property <string> secondary-text: "Download";
+    // What "Copy credit" puts on the clipboard.
+    in-out property <string> copy-text;
+    // Bumped by each new search (not by the next page): the list goes back to its top.
+    in-out property <int> generation;
+
+    in-out property <bool> settings-open;
+    in-out property <string> jamendo-key;
+    in-out property <string> folder;
+    // The folder used while `folder` is empty.
+    in-out property <string> folder-hint;
+    // No client ID is set, but this build carries one.
+    in-out property <bool> key-from-build;
+
+    // The card over the picture while a Free Music song plays.
+    in-out property <bool> np-visible;
+    in-out property <string> np-title;
+    in-out property <string> np-artist;
+    in-out property <string> np-info;
+    in-out property <image> np-cover;
+    in-out property <bool> np-has-cover;
+
+    callback opened();
+    callback closed();
+    callback search();
+    callback edited();
+    callback more();
+    callback chip-clicked(string);
+    callback filter(string, string);
+    callback select(int);
+    callback primary(int);
+    callback secondary(int);
+    callback action(string, int);
+    callback open-settings();
+    callback save-settings();
+    callback choose-folder();
+}
+
+// A choice that opens a list under itself.
+component Dropdown inherits Rectangle {
+    in property <[string]> options;
+    in property <string> value;
+    callback picked(string);
+
+    height: 32px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: touch.has-hover ? #ffffff38 : #ffffff1f;
+    background: touch.has-hover ? #ffffff12 : #ffffff0a;
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: root.value;
+            color: Theme.text-soft;
+            font-size: 12.5px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            StrokeIcon { data: Ic.chevron-down; size: 12px; stroke-width: 1.5px; color: Theme.text-dim; }
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: Math.max(root.width, 170px);
+        height: menu.preferred-height;
+        Rectangle {
+            background: Theme.menu-bg;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.surface-border;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000080;
+            drop-shadow-offset-y: 6px;
+        }
+        menu := VerticalLayout {
+            padding: 6px;
+            for o in root.options : MenuItem {
+                text: o;
+                selected: o == root.value;
+                clicked => { root.picked(o); }
+            }
+        }
+    }
+}
+
+// A one-line text box with a placeholder.
+component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <length> inset: 12px;
+    callback accepted();
+    callback edited();
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    height: 36px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent-strong : #ffffff24;
+    background: #ffffff0f;
+    if root.text == "" : Text {
+        x: root.inset;
+        width: parent.width - root.inset - 12px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.muted;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    input := TextInput {
+        x: root.inset;
+        width: parent.width - root.inset - 12px;
+        height: parent.height;
+        text <=> root.text;
+        color: Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+        single-line: true;
+        accepted => { root.accepted(); }
+        edited => { root.edited(); }
+    }
+}
+
+// A genre or list chip.
+component FilterChip inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+
+    height: 26px;
+    width: label.preferred-width + 22px;
+    border-radius: 13px;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : transparent;
+    background: root.active ? #818cf84d : (touch.has-hover ? #ffffff1f : #ffffff0f);
+    label := Text {
+        text: root.text;
+        color: root.active ? Theme.text : Theme.text-dim;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A small pill: the source badge, the licence.
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <color> fg: Theme.text-soft;
+    in property <brush> fill: #ffffff14;
+    in property <color> edge: transparent;
+    in property <length> least: 0px;
+
+    width: Math.max(root.least, label.preferred-width + 14px);
+    height: 18px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: root.edge;
+    background: root.fill;
+    label := Text {
+        text: root.text;
+        color: root.fg;
+        font-size: 10.5px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Play / queue / download at the end of a row.
+component RowButton inherits Rectangle {
+    in property <string> icon;
+    in property <bool> filled: true;
+    in property <float> viewbox: 24;
+    in property <length> icon-size: 16px;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: touch.has-hover && root.enabled ? #818cf840 : transparent;
+    property <color> glyph: !root.enabled ? Theme.disabled : (touch.has-hover ? Theme.accent : Theme.text-dim);
+    if root.filled : AppIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        data: root.icon;
+        viewbox: root.viewbox;
+        size: root.icon-size;
+        color: root.glyph;
+    }
+    if !root.filled : StrokeIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        data: root.icon;
+        viewbox: root.viewbox;
+        size: root.icon-size;
+        stroke-width: 1.5px;
+        color: root.glyph;
+    }
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+// The cover, or a note when there is none.
+component Cover inherits Rectangle {
+    in property <image> source;
+    in property <bool> has;
+    in property <length> glyph: 20px;
+    border-radius: 6px;
+    clip: true;
+    background: #818cf826;
+    if root.has : Image {
+        width: 100%;
+        height: 100%;
+        source: root.source;
+        image-fit: cover;
+    }
+    if !root.has : StrokeIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        data: Ic.music;
+        viewbox: 24;
+        size: root.glyph;
+        stroke-width: 1.6px;
+        color: Theme.accent;
+    }
+}
+
+// A result: cover, title, artist · album, source, licence, length, and its
+// buttons while the pointer is on it.
+component TrackRow inherits Rectangle {
+    in property <FmRow> fm;
+    in property <bool> current;
+    callback clicked();
+    callback activated();
+    callback play();
+    callback queue();
+    callback download();
+
+    height: 52px;
+    border-radius: 8px;
+    background: root.current ? #818cf826 : (ta.has-hover ? #ffffff0d : transparent);
+
+    // A parent of the row's buttons, so it still reports hover while the
+    // pointer is on one of them.
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        double-clicked => { root.activated(); }
+
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 8px;
+            spacing: 10px;
+            VerticalLayout {
+                alignment: center;
+                Cover { width: 40px; height: 40px; source: root.fm.cover; has: root.fm.has-cover; }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: root.fm.title;
+                    color: root.current ? Theme.accent : Theme.text;
+                    font-size: 13.5px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.fm.sub;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Pill {
+                    text: root.fm.badge;
+                    fill: root.fm.badge == "Jamendo" ? #60a5fa38 : (root.fm.badge == "FMA" ? #f472b638 : #ffffff17);
+                }
+            }
+            if root.fm.lic != "" : VerticalLayout {
+                alignment: center;
+                Pill {
+                    text: root.fm.lic;
+                    least: 64px;
+                    fg: root.fm.free ? Theme.ok : Theme.text-dim;
+                    fill: root.fm.free ? #86d9a02e : transparent;
+                    edge: root.fm.free ? Theme.ok : #ffffff24;
+                }
+            }
+            if root.fm.saved : VerticalLayout {
+                alignment: center;
+                StrokeIcon { data: Ic.tick; viewbox: 12; size: 14px; stroke-width: 1.8px; color: Theme.ok; }
+            }
+            Text {
+                width: 40px;
+                text: root.fm.dur;
+                color: Theme.muted;
+                font-size: 12px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                width: buttons.preferred-width;
+                opacity: ta.has-hover || root.current ? 1 : 0;
+                buttons := HorizontalLayout {
+                spacing: 2px;
+                VerticalLayout {
+                    alignment: center;
+                    RowButton { icon: Ic.play; icon-size: 18px; clicked => { root.play(); } }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    RowButton { icon: Ic.queue-add; clicked => { root.queue(); } }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    RowButton {
+                        icon: Ic.download;
+                        filled: false;
+                        viewbox: 16;
+                        icon-size: 14px;
+                        enabled: root.fm.dl;
+                        clicked => { root.download(); }
+                    }
+                }
+                }
+            }
+        }
+    }
+}
+
+// The settings button beside Search: Material's sliders.
+component SettingsButton inherits Rectangle {
+    in property <bool> active;
+    callback clicked();
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: root.active ? #818cf833 : (touch.has-hover ? Theme.hover : transparent);
+    AppIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        data: Ic.tune;
+        size: 18px;
+        color: root.active ? Theme.accent : Theme.text-soft;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component MusicDialog inherits Rectangle {
+    public function focus-input() {
+        search.focus-input();
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                if (FreeMusicState.settings-open) {
+                    FreeMusicState.settings-open = false;
+                } else {
+                    FreeMusicState.closed();
+                }
+                return accept;
+            }
+            return reject;
+        }
+
+        DialogFrame {
+            title: FreeMusicState.title;
+            panel-width: 1040px;
+            body-height: 660px;
+            close => { FreeMusicState.closed(); }
+
+            VerticalLayout {
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 36px;
+                    Dropdown {
+                        width: 168px;
+                        height: 36px;
+                        options: FreeMusicState.sources;
+                        value: FreeMusicState.source;
+                        picked(o) => {
+                            FreeMusicState.source = o;
+                            FreeMusicState.selected = -1;
+                            FreeMusicState.search();
+                        }
+                    }
+                    search := Field {
+                        horizontal-stretch: 1;
+                        inset: 34px;
+                        text <=> FreeMusicState.query;
+                        placeholder: "Search songs, artists, albums, genres…";
+                        accepted => {
+                            FreeMusicState.selected = -1;
+                            FreeMusicState.search();
+                        }
+                        edited => { FreeMusicState.edited(); }
+                        StrokeIcon {
+                            x: 11px;
+                            y: (parent.height - self.height) / 2;
+                            data: Ic.search;
+                            viewbox: 24;
+                            size: 16px;
+                            stroke-width: 1.8px;
+                            color: Theme.muted;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        DialogButton {
+                            text: "Search";
+                            primary: true;
+                            enabled: !FreeMusicState.busy;
+                            clicked => {
+                                FreeMusicState.selected = -1;
+                                FreeMusicState.search();
+                            }
+                        }
+                    }
+                    SettingsButton {
+                        active: FreeMusicState.settings-open;
+                        clicked => {
+                            if (FreeMusicState.settings-open) {
+                                FreeMusicState.settings-open = false;
+                            } else {
+                                FreeMusicState.open-settings();
+                            }
+                        }
+                    }
+                }
+
+                if !FreeMusicState.settings-open : Rectangle {
+                    height: 28px;
+                    chip-fl := Flickable {
+                        viewport-width: Math.max(self.width, chip-row.preferred-width);
+                        // The mouse wheel scrolls the row sideways.
+                        TouchArea {
+                            width: chip-fl.viewport-width;
+                            height: chip-fl.height;
+                            scroll-event(e) => {
+                                if (chip-fl.viewport-width <= chip-fl.width) {
+                                    return reject;
+                                }
+                                chip-fl.viewport-x = Math.max(chip-fl.width - chip-fl.viewport-width, Math.min(0px,
+                                    chip-fl.viewport-x + (Math.abs(e.delta-y) > Math.abs(e.delta-x) ? e.delta-y : e.delta-x)));
+                                return accept;
+                            }
+                        }
+                        chip-row := HorizontalLayout {
+                            x: 0;
+                            height: 26px;
+                            spacing: 6px;
+                            for c in FreeMusicState.chips : FilterChip {
+                                text: c;
+                                active: c == FreeMusicState.chip;
+                                clicked => {
+                                    FreeMusicState.selected = -1;
+                                    FreeMusicState.chip-clicked(c);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !FreeMusicState.settings-open : HorizontalLayout {
+                    spacing: 8px;
+                    for f in FreeMusicState.filters : Dropdown {
+                        horizontal-stretch: 1;
+                        options: f.options;
+                        value: f.value;
+                        picked(o) => {
+                            FreeMusicState.selected = -1;
+                            FreeMusicState.filter(f.name, o);
+                        }
+                    }
+                }
+
+                if !FreeMusicState.settings-open : HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: 12px;
+
+                    // Arrow keys move the selection, Home / End jump, Enter plays;
+                    // the selection is kept in view.
+                    rk := FocusScope {
+                        horizontal-stretch: 1;
+                        property <length> stride: 54px;
+                        property <int> n: FreeMusicState.tracks.length;
+                        property <int> generation: FreeMusicState.generation;
+                        changed generation => { list.viewport-y = 0; }
+
+                        function reveal(i: int) {
+                            if (i < 0) {
+                                return;
+                            }
+                            if (i * self.stride < -list.viewport-y) {
+                                list.viewport-y = -i * self.stride;
+                            } else if (i * self.stride + 52px > -list.viewport-y + list.visible-height) {
+                                list.viewport-y = -(i * self.stride + 52px - list.visible-height);
+                            }
+                        }
+                        function go(i: int) {
+                            FreeMusicState.selected = Math.max(0, Math.min(self.n - 1, i));
+                            FreeMusicState.select(FreeMusicState.selected);
+                            self.reveal(FreeMusicState.selected);
+                        }
+                        key-pressed(e) => {
+                            if (self.n == 0) {
+                                return reject;
+                            }
+                            if (e.text == Key.DownArrow) {
+                                self.go(FreeMusicState.selected < 0 ? 0 : FreeMusicState.selected + 1);
+                                return accept;
+                            }
+                            if (e.text == Key.UpArrow) {
+                                self.go(FreeMusicState.selected < 0 ? 0 : FreeMusicState.selected - 1);
+                                return accept;
+                            }
+                            if (e.text == Key.Home) {
+                                self.go(0);
+                                return accept;
+                            }
+                            if (e.text == Key.End) {
+                                self.go(self.n - 1);
+                                return accept;
+                            }
+                            if (e.text == Key.Return && FreeMusicState.selected >= 0) {
+                                FreeMusicState.primary(FreeMusicState.selected);
+                                return accept;
+                            }
+                            return reject;
+                        }
+
+                        list := ScrollView {
+                            // Only the rows near the viewport exist: infinite scroll
+                            // can collect a few hundred.
+                            property <int> lo: Math.floor(-self.viewport-y / rk.stride) - 4;
+                            property <int> hi: Math.ceil((-self.viewport-y + self.visible-height) / rk.stride) + 4;
+                            viewport-width: self.visible-width;
+                            viewport-height: rk.n * rk.stride + (FreeMusicState.has-more ? 40px : 0px);
+                            changed viewport-y => {
+                                if (FreeMusicState.has-more && self.viewport-height > self.visible-height
+                                    && -self.viewport-y > self.viewport-height - self.visible-height - 160px) {
+                                    FreeMusicState.more();
+                                }
+                            }
+                            for r[i] in FreeMusicState.tracks : Rectangle {
+                                x: 0;
+                                y: i * rk.stride;
+                                width: list.visible-width - 6px;
+                                height: 52px;
+                                if i >= list.lo && i <= list.hi : TrackRow {
+                                    fm: r;
+                                    current: r.selected || i == FreeMusicState.selected;
+                                    clicked => {
+                                        rk.focus();
+                                        FreeMusicState.selected = i;
+                                        FreeMusicState.select(i);
+                                    }
+                                    activated => {
+                                        FreeMusicState.selected = i;
+                                        FreeMusicState.select(i);
+                                        FreeMusicState.primary(i);
+                                    }
+                                    play => {
+                                        FreeMusicState.selected = i;
+                                        FreeMusicState.select(i);
+                                        FreeMusicState.primary(i);
+                                    }
+                                    queue => { FreeMusicState.action("Queue", i); }
+                                    download => {
+                                        FreeMusicState.selected = i;
+                                        FreeMusicState.select(i);
+                                        FreeMusicState.secondary(i);
+                                    }
+                                }
+                            }
+                            if FreeMusicState.has-more : Rectangle {
+                                x: 0;
+                                y: rk.n * rk.stride;
+                                width: list.visible-width - 6px;
+                                height: 40px;
+                                Text {
+                                    text: "Load more";
+                                    color: more-touch.has-hover ? #a5b4fc : Theme.accent;
+                                    font-size: 12.5px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                more-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { FreeMusicState.more(); }
+                                }
+                            }
+                        }
+                        if rk.n == 0 && FreeMusicState.busy : HorizontalLayout {
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: center;
+                                Spinner { indeterminate: true; width: 28px; height: 28px; }
+                            }
+                        }
+                    }
+
+                    // The detail pane: large cover, what the track is, its licence.
+                    detail := Rectangle {
+                        width: 270px;
+                        border-radius: 10px;
+                        background: #ffffff08;
+                        clip: true;
+                        Flickable {
+                            viewport-height: detail-col.preferred-height;
+                            detail-col := VerticalLayout {
+                                width: detail.width;
+                                padding: 12px;
+                                spacing: 10px;
+                                alignment: start;
+                                if FreeMusicState.has-detail-cover : Cover {
+                                    height: detail.width - 24px;
+                                    border-radius: 8px;
+                                    source: FreeMusicState.detail-cover;
+                                    has: true;
+                                }
+                                Text {
+                                    text: FreeMusicState.detail == "" ? "Select a track to see its licence and details." : FreeMusicState.detail;
+                                    color: FreeMusicState.detail == "" ? Theme.muted : Theme.text-soft;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The settings: what Vivi keeps on its Free Music settings page.
+                if FreeMusicState.settings-open : VerticalLayout {
+                    vertical-stretch: 1;
+                    spacing: 18px;
+                    alignment: start;
+                    padding-top: 6px;
+                    Text {
+                        text: "Free Music settings";
+                        color: Theme.text;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: "Jamendo client ID"; color: Theme.text-soft; font-size: 12.5px; }
+                        Field {
+                            text <=> FreeMusicState.jamendo-key;
+                            placeholder: FreeMusicState.key-from-build ? "Using the client ID built into this copy" : "Paste the client ID…";
+                            accepted => { FreeMusicState.save-settings(); }
+                        }
+                        Text {
+                            text: "For Jamendo, the biggest catalogue: searched together with the Internet Archive once set. Get a free client ID at devportal.jamendo.com (sign up → My Apps → Add application). Only the public client ID is needed, never the secret. The Internet Archive and the Free Music Archive need no key.";
+                            color: Theme.muted;
+                            font-size: 11.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: "Download folder"; color: Theme.text-soft; font-size: 12.5px; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Field {
+                                horizontal-stretch: 1;
+                                text <=> FreeMusicState.folder;
+                                placeholder: FreeMusicState.folder-hint;
+                                accepted => { FreeMusicState.save-settings(); }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                DialogButton {
+                                    text: "Choose…";
+                                    clicked => { FreeMusicState.choose-folder(); }
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Where downloads go, one folder per artist, each song with its tags, cover and a .licence.txt. Empty: " + FreeMusicState.folder-hint;
+                            color: Theme.muted;
+                            font-size: 11.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        DialogButton {
+                            text: "Cancel";
+                            clicked => { FreeMusicState.settings-open = false; }
+                        }
+                        DialogButton {
+                            text: "Save";
+                            primary: true;
+                            clicked => { FreeMusicState.save-settings(); }
+                        }
+                    }
+                }
+
+                if !FreeMusicState.settings-open : Text {
+                    text: FreeMusicState.status;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                    overflow: elide;
+                }
+
+                if !FreeMusicState.settings-open : HorizontalLayout {
+                    spacing: 4px;
+                    for act in FreeMusicState.actions : DialogButton {
+                        text: act;
+                        clicked => {
+                            if (act == "Copy credit") {
+                                copier.select-all();
+                                copier.copy();
+                                copier.clear-selection();
+                            }
+                            FreeMusicState.action(act, FreeMusicState.selected);
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    DialogButton {
+                        text: FreeMusicState.secondary-text;
+                        enabled: FreeMusicState.secondary-text != "Preview only" && (FreeMusicState.selected >= 0 || FreeMusicState.detail != "");
+                        clicked => { FreeMusicState.secondary(FreeMusicState.selected); }
+                    }
+                    DialogButton {
+                        text: "Play";
+                        primary: true;
+                        enabled: FreeMusicState.selected >= 0 || FreeMusicState.detail != "";
+                        clicked => { FreeMusicState.primary(FreeMusicState.selected); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Holds the attribution so "Copy credit" can put it on the clipboard.
+    copier := TextInput {
+        width: 0px;
+        height: 0px;
+        visible: false;
+        read-only: true;
+        text: FreeMusicState.copy-text;
+    }
+}
+
+// "Now playing" while a Free Music song plays: cover, title, artist · album,
+// and the source with the licence.
+export component MusicCard inherits Rectangle {
+    height: 132px;
+    border-radius: 16px;
+    background: #101016e6;
+    border-width: 1px;
+    border-color: #818cf859;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #00000080;
+    drop-shadow-offset-y: 8px;
+
+    HorizontalLayout {
+        padding: 16px;
+        spacing: 16px;
+        Cover {
+            width: 100px;
+            height: 100px;
+            border-radius: 10px;
+            glyph: 40px;
+            source: FreeMusicState.np-cover;
+            has: FreeMusicState.np-has-cover;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            Text {
+                text: "NOW PLAYING";
+                color: Theme.accent;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            Text {
+                text: FreeMusicState.np-title;
+                color: Theme.text;
+                font-size: 18px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if FreeMusicState.np-artist != "" : Text {
+                text: FreeMusicState.np-artist;
+                color: Theme.text-dim;
+                font-size: 13px;
+                overflow: elide;
+            }
+            if FreeMusicState.np-info != "" : Text {
+                text: FreeMusicState.np-info;
+                color: Theme.muted;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+    }
+}

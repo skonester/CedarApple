@@ -52,6 +52,7 @@ struct QueueItem {
     url: String,
     name: String,
     /// What the position is remembered under: the path, or `torrent:<hash>/<i>`.
+    /// Empty for a Free Music song, which starts from the top every time.
     id: String,
     /// `(infohash, index)` for a torrent file.
     torrent: Option<(String, usize)>,
@@ -148,7 +149,9 @@ impl Ctx {
 
     /// Write down where the current file is, so it can be resumed.
     fn save_position(&self) {
-        let Some(item) = self.current() else { return };
+        let Some(item) = self.current().filter(|i| !i.id.is_empty()) else {
+            return;
+        };
         let (Some(pos), Some(dur)) = (
             self.mpv.get_double("time-pos"),
             self.mpv.get_double("duration"),
@@ -273,6 +276,7 @@ impl Ctx {
             ui.set_playlist_count(0);
             ui.set_stalled(false);
         });
+        crate::free_music::now_playing("");
         refresh_rows();
     }
 
@@ -359,7 +363,8 @@ impl Ctx {
         });
 
         let Some(item) = self.current() else { return };
-        if let Some(p) = history::position(&item.id)
+        if !item.id.is_empty()
+            && let Some(p) = history::position(&item.id)
             && p.pos > RESUME_MIN_S
             && (p.dur <= 0.0 || p.pos / p.dur < history::FINISHED_FRACTION)
         {
@@ -507,11 +512,20 @@ impl Ctx {
             self.sync_queue_model();
             if let Some(item) = self.current() {
                 ui.set_video_title(item.name.clone().into());
+                // A Free Music song shows its card and reads as title and artist.
+                let song = crate::free_music::now_playing(&item.url);
                 let mut s = self.state.lock().unwrap();
-                s.current_title = item.name.clone();
-                s.current_artist = String::new();
+                (s.current_title, s.current_artist) =
+                    song.unwrap_or_else(|| (item.name.clone(), String::new()));
                 s.current_item_id = Some((
-                    if item.torrent.is_some() { "torrent" } else { "local" }.to_string(),
+                    if item.torrent.is_some() {
+                        "torrent"
+                    } else if item.id.is_empty() {
+                        "music"
+                    } else {
+                        "local"
+                    }
+                    .to_string(),
                     item.id.clone(),
                 ));
             }
@@ -938,6 +952,26 @@ fn delete_row(folder: String, watched_only: bool) {
     });
 }
 
+/// Play a song the Free Music browser picked (a stream URL or the downloaded
+/// file), or add it to the end of the queue when `queue` and something plays.
+pub fn play_music(url: &str, name: &str, queue: bool) {
+    let c = ctx();
+    let item = QueueItem {
+        url: url.to_string(),
+        name: name.to_string(),
+        id: String::new(),
+        torrent: None,
+        torrent_path: String::new(),
+    };
+    if queue && !c.queue.borrow().is_empty() {
+        c.mpv.command(&["loadfile", url, "append"]);
+        c.queue.borrow_mut().push(item);
+        c.sync_queue_model();
+    } else {
+        c.load_queue(vec![item], 0);
+    }
+}
+
 fn local_item(path: &str) -> QueueItem {
     QueueItem {
         url: path.to_string(),
@@ -1236,10 +1270,12 @@ pub fn install(
     ui.on_toggle_hwdec(|| {
         let c = ctx();
         let current = c.mpv.get_property_string("hwdec").unwrap_or_default();
-        let next = if current == "no" || current.is_empty() { "auto" } else { "no" };
+        // auto-safe, not auto: only the decoders mpv's authors vouch for
+        // (as Vivi does), never the ones known to corrupt frames.
+        let next = if current == "no" || current.is_empty() { "auto-safe" } else { "no" };
         c.mpv.set_property_string("hwdec", next);
         c.osd(&format!("hwdec: {next}…"), None);
-        // "auto" is a request, not an outcome - mpv picks (or refuses) a
+        // "auto-safe" is a request, not an outcome - mpv picks (or refuses) a
         // decoder when the video re-inits, so read hwdec-current back a beat
         // later and report what it actually settled on.
         c.hwdec_timer.start(

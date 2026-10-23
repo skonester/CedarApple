@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=CedarApple
+GenericName=Media Player
+Comment=Video player built on mpv, with torrent streaming and free music
+Exec=cedarapple
+Icon=cedarapple
+Terminal=false
+Categories=AudioVideo;Video;Audio;Player;
+Keywords=video;audio;player;mpv;torrent;magnet;music;

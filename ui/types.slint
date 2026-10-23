@@ -38,6 +38,31 @@ export struct TorrentRowData {
     watched: int,
 }
 
+// A Free Music result row (src/free_music): cover, title, artist · album,
+// source badge, licence chip (green when commercial use is allowed), length.
+export struct FmRow {
+    title: string,
+    sub: string,
+    badge: string,
+    lic: string,
+    free: bool,
+    dur: string,
+    cover: image,
+    has-cover: bool,
+    // The source allows a download.
+    dl: bool,
+    // Downloaded already.
+    saved: bool,
+    selected: bool,
+}
+
+// A Free Music filter dropdown: mood, licence, length, sort.
+export struct FmFilter {
+    name: string,
+    options: [string],
+    value: string,
+}
+
 // A video of a torrent, in the "What to watch" list.
 export struct PickFile {
     index: int,

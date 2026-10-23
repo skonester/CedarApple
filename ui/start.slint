@@ -1,6 +1,7 @@
-// What the window shows before anything is playing: the two ways in (a file,
-// or a link — a magnet, a .torrent, or any URL mpv can open), and the torrents
-// already on this disk, which is how a season is reopened without its magnet.
+// What the window shows before anything is playing: the ways in (a file, a
+// link — a magnet, a .torrent, or any URL mpv can open — or the Free Music
+// browser), and the torrents already on this disk, which is how a season is
+// reopened without its magnet.
 //
 // Ported from Frame Player's StartScreen.svelte (markup and CSS), GPL-3.0-or-
 // later, Copyright (c) Evgenii Zakharov. What is CedarApple's own is the
@@ -129,6 +130,8 @@ export component StartScreen inherits Rectangle {
 
     callback open-file();
     callback open-link();
+    // The Free Music browser (ui/music.slint).
+    callback open-music();
     callback open-torrent(string);
     callback reveal-torrent(string);
     // (folder, watched only)
@@ -191,6 +194,11 @@ export component StartScreen inherits Rectangle {
                 text: "Open a link";
                 icon: Ic.link;
                 clicked => { root.open-link(); }
+            }
+            OutlineButton {
+                text: "Free music";
+                icon: Ic.music;
+                clicked => { root.open-music(); }
             }
         }
 

@@ -8,13 +8,15 @@
 
 import { Theme, Fmt, Tip } from "./theme.slint";
 import { AppIcon, StrokeIcon, Ic } from "./icons.slint";
-import { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile } from "./types.slint";
+import { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter } from "./types.slint";
 import { CtlButton, VolumeBar, SeekBar, MenuItem, MenuTitle, MenuPanel } from "./controls.slint";
 import { StartScreen } from "./start.slint";
 import { LinkDialog, PickDialog } from "./dialogs.slint";
+import { MusicDialog, MusicCard, FreeMusicState } from "./music.slint";
 import { Spinner } from "std-widgets.slint";
 
-export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile } from "./types.slint";
+export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter } from "./types.slint";
+export { FreeMusicState } from "./music.slint";
 
 // A text button in the top bar, for CedarApple's own mpv-side tools.
 component BarTextButton inherits Rectangle {
@@ -176,6 +178,12 @@ export component AppWindow inherits Window {
             key-handler.focus();
         }
     }
+    property <bool> music-open: FreeMusicState.open;
+    changed music-open => {
+        if (!root.music-open) {
+            key-handler.focus();
+        }
+    }
 
     // Frame Player's default key map (keys.svelte.ts), plus CedarApple's C for
     // the info card and Ctrl+O kept from before.
@@ -301,12 +309,20 @@ export component AppWindow inherits Window {
         }
     }
 
+    // A Free Music song: what plays, over the (empty) picture.
+    if root.has_file && FreeMusicState.np-visible : MusicCard {
+        width: Math.min(560px, parent.width - 48px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2 - 24px;
+    }
+
     if !root.has_file : StartScreen {
         torrent-rows: root.torrent_rows;
         torrents-total: root.torrents_total;
         row-opening: root.row_opening;
         open-file => { root.open_file(); }
         open-link => { root.open-link(); }
+        open-music => { FreeMusicState.opened(); }
         open-torrent(folder) => { root.open_torrent_row(folder); }
         reveal-torrent(folder) => { root.reveal_torrent_row(folder); }
         delete-torrent(folder, watched) => { root.delete_torrent_row(folder, watched); }
@@ -359,6 +375,13 @@ export component AppWindow inherits Window {
                     tip-below: true;
                     clicked => { root.open-link(); }
                     StrokeIcon { x: 9px; y: 8px; data: Ic.link; viewbox: 24; size: 18px; color: Theme.text; stroke-width: 1.8px; }
+                }
+                CtlButton {
+                    icon-size: 0px;
+                    tip: "Free music";
+                    tip-below: true;
+                    clicked => { FreeMusicState.opened(); }
+                    StrokeIcon { x: 9px; y: 8px; data: Ic.music; viewbox: 24; size: 18px; color: Theme.text; stroke-width: 1.6px; }
                 }
                 BarTextButton {
                     text: "i";
@@ -751,6 +774,10 @@ export component AppWindow inherits Window {
                 note: "Ctrl+L";
                 clicked => { root.ctx-open = false; root.open-link(); }
             }
+            MenuItem {
+                text: "Free music…";
+                clicked => { root.ctx-open = false; FreeMusicState.opened(); }
+            }
             if root.has_file : MenuItem {
                 text: "Close";
                 clicked => { root.ctx-open = false; root.close_file(); }
@@ -809,5 +836,9 @@ export component AppWindow inherits Window {
         files: root.pick_files;
         pick(index) => { root.pick_torrent_video(index); }
         close => { root.pick_open = false; }
+    }
+
+    if FreeMusicState.open : MusicDialog {
+        init => { self.focus-input(); }
     }
 }

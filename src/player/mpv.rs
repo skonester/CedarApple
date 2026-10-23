@@ -8,15 +8,19 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 
 /// Where mpv looks for `scripts/` and `script-opts/`: the `mpv/` folder next to
-/// the executable, which build.rs fills from `assets/mpv/`. The source tree is
-/// a fallback so a build whose assets never got copied still finds them.
+/// the executable, which build.rs fills from `assets/mpv/` (and the Windows zip
+/// and Linux tarball ship), else `../share/cedarapple/mpv` beside the `bin/`
+/// the executable is in (the AppImage and the Flatpak). The source tree is a
+/// fallback so a build whose assets never got copied still finds them.
 fn config_dir() -> Option<PathBuf> {
-    let next_to_exe = std::env::current_exe()
+    let exe_dir = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join("mpv")));
+        .and_then(|exe| exe.parent().map(|d| d.to_path_buf()));
+    let next_to_exe = exe_dir.as_ref().map(|d| d.join("mpv"));
+    let installed = exe_dir.as_ref().map(|d| d.join("../share/cedarapple/mpv"));
     let in_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/mpv");
 
-    [next_to_exe, Some(in_tree)]
+    [next_to_exe, installed, Some(in_tree)]
         .into_iter()
         .flatten()
         .find(|p| p.is_dir())
@@ -43,6 +47,8 @@ impl MpvHandle {
                 ("demuxer-max-back-bytes", "75M"),
                 ("vd-lavc-threads", "0"),
                 ("terminal", "yes"),
+                // A file still plays (silently) when there is no audio device.
+                ("audio-fallback-to-null", "yes"),
                 ("stop-screensaver", "yes"),
                 // mpv's own seek bar would fight CedarApple's; the card needs
                 // osd-level raised (below), so silence this explicitly.
@@ -51,6 +57,37 @@ impl MpvHandle {
             ];
 
             for (opt, val) in cache_opts {
+                let c_opt = CString::new(opt).unwrap();
+                let c_val = CString::new(val).unwrap();
+                mpv_set_property_string(handle, c_opt.as_ptr(), c_val.as_ptr());
+            }
+
+            // mpv's own OSD scripts (stats, console, select, positioning,
+            // commands) have no way in here: no default key bindings, and
+            // CedarApple draws its own UI. Each is a Lua state and a thread.
+            // spincard only needs mpv's Lua modules, not these. As in Vivi
+            // (player.rs). Options an older libmpv lacks are refused, harmlessly.
+            for opt in [
+                "load-stats-overlay",
+                "load-console",
+                "load-select",
+                "load-positioning",
+                "load-commands",
+                "load-auto-profiles",
+            ] {
+                let c_opt = CString::new(opt).unwrap();
+                let c_val = CString::new("no").unwrap();
+                mpv_set_property_string(handle, c_opt.as_ptr(), c_val.as_ptr());
+            }
+
+            // The terminal keeps warnings but not the status line, which
+            // otherwise rewrites itself several times a second.
+            // CEDARAPPLE_MPV_DEBUG=1 gets everything, verbose.
+            let debug = std::env::var_os("CEDARAPPLE_MPV_DEBUG").is_some();
+            for (opt, val) in [
+                ("quiet", if debug { "no" } else { "yes" }),
+                ("msg-level", if debug { "all=v" } else { "all=warn" }),
+            ] {
                 let c_opt = CString::new(opt).unwrap();
                 let c_val = CString::new(val).unwrap();
                 mpv_set_property_string(handle, c_opt.as_ptr(), c_val.as_ptr());

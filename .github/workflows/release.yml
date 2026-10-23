@@ -1,0 +1,278 @@
+# Builds every release file and publishes them as one GitHub release:
+#
+#   cedarapple-<tag>-linux-x86_64.tar.gz   Linux binary + mpv/ config dir (needs libmpv installed)
+#   CedarApple-<tag>-x86_64.AppImage       Linux, any distro, libmpv bundled
+#   cedarapple-<tag>-x86_64.flatpak        Linux Flatpak bundle
+#   cedarapple-<tag>-windows-x86_64.zip    Windows, portable: the exe, the bundled
+#                                          libmpv-2.dll from mpv-dev/, mpv/, licences
+#
+# Push a tag like `v0.3.0` to build and release it. "Run workflow" on the Actions
+# tab builds the current branch; give it a tag there to release that build as
+# well, or leave the tag empty to only keep the files as run artifacts.
+#
+# Modelled on Vivi's release.yml (MIT, Copyright (c) 2026 Ruslan Popelyshyn).
+# The one deliberate difference: Windows ships the libmpv-2.dll committed in
+# mpv-dev/ (build.rs links and copies it), never a downloaded one.
+#
+# Optional repository variable CEDARAPPLE_JAMENDO_CLIENT_ID: a public Jamendo
+# client ID baked into the builds, so Free Music searches Jamendo out of the box.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.3.0). Empty = build only."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      ver: ${{ steps.meta.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work out the release name
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ "${{ github.ref_type }}" = tag ]; then TAG="${{ github.ref_name }}"; fi
+          if [ -n "$TAG" ]; then
+            VER="$TAG"
+          else
+            CARGO=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+            VER="v$CARGO-${GITHUB_SHA::7}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "Release: ${TAG:-(build only)}, files named $VER"
+
+  linux:
+    needs: meta
+    runs-on: ubuntu-24.04
+    env:
+      VER: ${{ needs.meta.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add swap (the LTO release link of the Slint UI needs more than the runner's RAM)
+        run: |
+          sudo fallocate -l 10G /swapfile.cedar && sudo chmod 600 /swapfile.cedar
+          sudo mkswap /swapfile.cedar && sudo swapon /swapfile.cedar
+          free -h
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libfontconfig1-dev libfuse2t64 desktop-file-utils \
+            nasm meson ninja-build pkg-config libass-dev libplacebo-dev libpulse-dev libasound2-dev libdrm-dev libgbm-dev \
+            libva-dev libvdpau-dev libvulkan-dev libwayland-dev wayland-protocols libx11-dev libxext-dev libxrandr-dev \
+            libxss-dev libxpresent-dev libxv-dev libxinerama-dev libegl-dev libuchardet-dev liblua5.2-dev libgnutls28-dev \
+            libdav1d-dev libvpx-dev libopus-dev libvorbis-dev libwebp-dev libxml2-dev libbz2-dev liblzma-dev zlib1g-dev \
+            libjpeg-dev liblcms2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Slim libmpv (FFmpeg decoders only, no mpv CLI) for the AppImage; cached by script hash.
+      - uses: actions/cache/restore@v4
+        id: deps
+        with:
+          path: deps
+          key: libmpv-${{ runner.os }}-${{ hashFiles('packaging/appimage/build-libmpv.sh') }}
+      - name: Build slim libmpv
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: PREFIX=$PWD/deps SRC=$RUNNER_TEMP/deps-src bash packaging/appimage/build-libmpv.sh
+      - name: Save slim libmpv
+        if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: deps
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+      - name: Build
+        run: cargo build --release --locked
+        env:
+          CEDARAPPLE_JAMENDO_CLIENT_ID: ${{ vars.CEDARAPPLE_JAMENDO_CLIENT_ID }}
+          PKG_CONFIG_PATH: ${{ github.workspace }}/deps/lib/pkgconfig
+          LIBRARY_PATH: ${{ github.workspace }}/deps/lib
+      - name: Tarball
+        run: |
+          NAME=cedarapple-${VER}-linux-x86_64
+          mkdir -p dist $NAME
+          cp target/release/cedarapple README.md LICENSE packaging/cedarapple.desktop packaging/cedarapple.png $NAME/
+          cp -r target/release/mpv $NAME/mpv
+          cp -r licenses $NAME/licenses
+          cp vendor/README-librqbit.md $NAME/licenses/
+          tar czf dist/$NAME.tar.gz $NAME
+      - name: AppImage (bundles the slim libmpv and its libraries)
+        run: |
+          desktop-file-validate packaging/cedarapple.desktop
+          DEPS=$PWD/deps bash packaging/appimage/build-appimage.sh dist/CedarApple-${VER}-x86_64.AppImage
+          # Smoke test: the extracted image must resolve every library.
+          ./dist/CedarApple-${VER}-x86_64.AppImage --appimage-extract >/dev/null
+          ! LD_LIBRARY_PATH=squashfs-root/usr/lib ldd squashfs-root/usr/bin/cedarapple | grep "not found"
+          test -f squashfs-root/usr/share/cedarapple/mpv/scripts/spincard/main.lua
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  windows:
+    needs: meta
+    runs-on: windows-latest
+    env:
+      VER: ${{ needs.meta.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Links against mpv-dev/mpv.lib and copies the committed mpv-dev/libmpv-2.dll
+      # beside the exe (build.rs).
+      - name: Build
+        run: cargo build --release --locked
+        env:
+          CEDARAPPLE_JAMENDO_CLIENT_ID: ${{ vars.CEDARAPPLE_JAMENDO_CLIENT_ID }}
+      - name: Zip
+        shell: pwsh
+        run: |
+          $name = "cedarapple-$env:VER-windows-x86_64"
+          New-Item -ItemType Directory -Force $name, dist | Out-Null
+          Copy-Item target/release/cedarapple.exe, target/release/libmpv-2.dll, README.md, LICENSE $name/
+          Copy-Item -Recurse target/release/mpv "$name/mpv"
+          Copy-Item -Recurse licenses "$name/licenses"
+          Copy-Item vendor/README-librqbit.md "$name/licenses/"
+          foreach ($f in "cedarapple.exe", "libmpv-2.dll", "mpv/scripts/spincard/main.lua") {
+            if (-not (Test-Path "$name/$f")) { throw "missing from the package: $f" }
+          }
+          # The dll must be the committed one, not something else on the runner.
+          if ((Get-FileHash "$name/libmpv-2.dll").Hash -ne (Get-FileHash mpv-dev/libmpv-2.dll).Hash) {
+            throw "libmpv-2.dll is not mpv-dev/libmpv-2.dll"
+          }
+          # 7-Zip's maximum Deflate is smaller than Compress-Archive and still a plain zip.
+          7z a -tzip -mx=9 -mfb=258 "dist/$name.zip" $name | Out-Null
+          Get-ChildItem dist | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  # Every crate for the Flatpak's offline cargo build, from Cargo.lock.
+  cargo-sources:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: flatpak-cargo-generator
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet aiohttp tomlkit
+          curl -fsSLo "$RUNNER_TEMP/flatpak-cargo-generator.py" \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+          "$RUNNER_TEMP/venv/bin/python" "$RUNNER_TEMP/flatpak-cargo-generator.py" Cargo.lock -o cargo-sources.json
+          test -s cargo-sources.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-sources
+          path: cargo-sources.json
+
+  flatpak:
+    needs: [meta, cargo-sources]
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    env:
+      VER: ${{ needs.meta.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-sources
+          path: packaging/flatpak
+      - name: Add swap (the LTO release link of the Slint UI needs more than the runner's RAM)
+        run: |
+          # The flatpak-builder image may have no mkswap/swapon: warn and go on.
+          if ! command -v mkswap >/dev/null || ! command -v swapon >/dev/null; then
+            echo "::warning::no mkswap/swapon in this image; building without extra swap"; free -h; exit 0
+          fi
+          f="$GITHUB_WORKSPACE/../swapfile"
+          fallocate -l 10G "$f" && chmod 600 "$f" && mkswap "$f" && swapon "$f" || echo "::warning::no swap"
+          free -h
+      # The public Jamendo client ID, into the build env at CI time only (never committed).
+      - name: Jamendo client ID for the Flatpak build
+        env:
+          CEDARAPPLE_JAMENDO_CLIENT_ID: ${{ vars.CEDARAPPLE_JAMENDO_CLIENT_ID }}
+        run: |
+          [ -n "$CEDARAPPLE_JAMENDO_CLIENT_ID" ] || exit 0
+          M=packaging/flatpak/io.github.skonester.CedarApple.yml
+          sed -i "s|^\( *\)CARGO_HOME: /run/build/cedarapple/cargo$|&\n\1CEDARAPPLE_JAMENDO_CLIENT_ID: '$CEDARAPPLE_JAMENDO_CLIENT_ID'|" "$M"
+          grep -c CEDARAPPLE_JAMENDO_CLIENT_ID "$M"
+      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+        with:
+          bundle: cedarapple.flatpak
+          manifest-path: packaging/flatpak/io.github.skonester.CedarApple.yml
+          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.skonester.CedarApple.yml') }}
+          upload-artifact: false
+      - name: Name the bundle
+        run: mkdir -p dist && mv cedarapple.flatpak "dist/cedarapple-${VER}-x86_64.flatpak"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: dist/*
+
+  publish:
+    needs: [meta, linux, windows, flatpak]
+    # The Flatpak is a bonus: Linux and Windows must build, a failed Flatpak only goes missing.
+    if: always() && needs.meta.outputs.tag != '' && needs.linux.result == 'success' && needs.windows.result == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{linux,windows,flatpak}"
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          ls -la
+          sha256sum * > SHA256SUMS
+      - name: Release notes
+        run: |
+          {
+            echo "### Downloads"
+            echo "| Platform | File |"
+            echo "|---|---|"
+            echo "| Windows x64 | \`cedarapple-${TAG}-windows-x86_64.zip\`: unzip and run \`cedarapple.exe\` (libmpv-2.dll included). |"
+            echo "| Linux (any distro) | \`CedarApple-${TAG}-x86_64.AppImage\`: \`chmod +x\` and run. libmpv is bundled. |"
+            echo "| Linux tarball | \`cedarapple-${TAG}-linux-x86_64.tar.gz\`: needs libmpv installed (\`libmpv2\` / \`mpv\`). Keep \`mpv/\` beside the binary. |"
+            if ls dist/*.flatpak >/dev/null 2>&1; then
+              echo "| Linux Flatpak | \`cedarapple-${TAG}-x86_64.flatpak\`: \`flatpak install --user cedarapple-${TAG}-x86_64.flatpak\` (needs the Flathub remote for the runtime). |"
+            fi
+            echo
+            echo "Checksums: \`SHA256SUMS\`."
+          } > notes.md
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "CedarApple $TAG" --notes-file notes.md --generate-notes
