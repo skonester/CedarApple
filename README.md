@@ -2,103 +2,188 @@
 
 ![GPL3](GPL3.png)
 
-A small Rust + Slint media player. A learning project, not a polished product - it plays a
-video file you pick, with basic transport controls. Built on `libmpv` for playback. Useful for developers/educational purposes.
+CedarApple is a native media player written in Rust with a Slint UI and
+`libmpv` playback. It opens local files, web links, magnet links, and torrent
+files. It also includes a Creative Commons/public-domain music browser and
+downloader.
 
-## License
+The application is usable, but it is still an actively developed project
+rather than a polished, general-purpose media library.
 
-CedarApple is free software under the **GNU General Public License, version 3
-or later** — see [LICENSE](LICENSE). Copyright (c) 2026 skonester and
-Evgenii Zakharov.
+## Features
 
-The player started from code by tfo-dot released under the MIT License, which
-permits using it in a GPL-licensed work; CedarApple as a whole is distributed
-under the GPL. The MIT notice for that code is kept in
-[licenses/MIT-tfo-dot.txt](licenses/MIT-tfo-dot.txt), as its license requires.
+### Playback
 
-Much of the player is ported from [Frame Player](https://github.com/risenxxx/frame-player)
-(Copyright (c) Evgenii Zakharov, GPL-3.0-or-later): the torrent engine is its
-Rust code, taken nearly verbatim, and the controls, start screen, torrent flow
-and seek behaviour are its Svelte UI rebuilt in Slint and Rust. Every ported
-file says so at its top; [FRAME_PLAYER_ADOPTION.md](FRAME_PLAYER_ADOPTION.md)
-lists them. The vendored librqbit crates are Apache-2.0
-([licenses/Apache-2.0.txt](licenses/Apache-2.0.txt), changes described in
-[vendor/README-librqbit.md](vendor/README-librqbit.md)).
+- Open a local video or audio file, or a URL that mpv can play.
+- Pause, seek, frame-step, change speed, adjust volume, mute, and toggle
+  fullscreen.
+- Playlist/queue navigation, chapters, audio-track and subtitle-track
+  selection, repeat modes, and an on-screen display for changes.
+- Drag the seek bar to preview and seek precisely.
+- Resume positions are saved between launches.
+- Hardware decoding can be enabled from the player or Settings. Rendering uses
+  mpv through an OpenGL framebuffer.
+- Screenshots, aspect-ratio and deinterlacing controls, subtitle styling,
+  audio options, and mpv logging are available in Settings.
+- When Discord is running, CedarApple publishes the current playback title and
+  paused/playing state as Discord Rich Presence.
 
-The Free Music browser (`src/free_music/`, `ui/music.slint`), the render and
-mpv tweaks it came with, and the Linux packaging are ported from
-[Vivi](https://github.com/Loafer19/vivi) (Copyright (c) 2026 Ruslan
-Popelyshyn, MIT; notice in [licenses/MIT-vivi.txt](licenses/MIT-vivi.txt)).
+### Torrent streaming
 
-## Building
+- Open a magnet link or `.torrent` file from the start screen or the Open Link
+  dialog.
+- Resolve the torrent file list, choose a video, and stream it to mpv through a
+  loopback HTTP server.
+- Prioritize the file being watched instead of downloading a whole season
+  first. Seeding is disabled in the shipped configuration.
+- Show torrent progress, peers, speed, and cache-waiting status in the player.
+- Keep torrent metadata and watched-file state so previously opened torrents
+  can be reopened from the start screen.
+- Reveal a torrent's files or delete watched files/all files from the torrent
+  list.
 
-Needs Rust (via [rustup](https://rustup.rs/)) and `libmpv`:
+Torrent data is stored below the platform cache directory in a `torrents`
+subdirectory. The torrent engine includes support for additional preferences
+(seeding, port forwarding, proxy, encryption, and network route), but those
+preferences are not exposed in the current UI.
 
-- **Linux**: `sudo apt install libmpv-dev libxkbcommon-dev libfontconfig1-dev`
-  (or `pacman -S mpv`).
-- **macOS**: `brew install mpv`.
-- **Windows**: this repo already ships a working `mpv-dev/` folder (the ~100MB
-  `libmpv-2.dll` plus an `mpv.lib` built from it) - `cargo build --release` just picks it
-  up, nothing to download or set up. If you ever swap in a newer `libmpv-2.dll`, re-run
-  `powershell -File mpv-dev/gen_def.ps1` to regenerate `mpv.lib` to match it (needs the VS
-  Build Tools); see the comment at the top of that script for why that step exists at all.
+### Free Music
 
-```bash
+The Free Music dialog searches and browses:
+
+- **Jamendo**, when a free Jamendo client ID is configured.
+- **Internet Archive**, including its Free Music Archive collection mirror,
+  without an API key.
+
+It supports genre and mood browsing, source/licence/length filters, sorting,
+album and artist pages, similar-track radio, queues, and track playback.
+Downloads include metadata tags, cover art, licence information, and a
+`.licence.txt` attribution file. Downloaded tracks can be played locally.
+
+Configure the Jamendo client ID and download folder in Settings → Free Music.
+The ID can also be supplied through the `JAMENDO_CLIENT_ID` environment
+variable, or baked into release builds with the
+`CEDARAPPLE_JAMENDO_CLIENT_ID` repository variable. Without an ID, Internet
+Archive results remain available.
+
+### Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| `Space` / `K` | Play or pause |
+| `Left` / `Right` | Seek by the configured short step; hold `Shift` for 1 second |
+| `J` / `L` | Seek by the configured long step; uppercase `L` cycles repeat |
+| `Home` / `End` | Seek to the beginning/end |
+| `,` / `.` | Previous/next frame |
+| `[` / `]` | Decrease/increase speed |
+| `Backspace` | Reset speed to 1x |
+| `Page Up` / `Page Down` | Previous/next queue item |
+| `Ctrl+Left` / `Ctrl+Right` | Previous/next chapter |
+| `Up` / `Down` | Increase/decrease volume |
+| `M` | Mute/unmute |
+| `F` / `F11` | Toggle fullscreen |
+| `O` | Open a file |
+| `Ctrl+L` | Open a link |
+| `C` / `Shift+C` | Show the info card; `Shift+C` uses the compact version |
+| `S` | Take a screenshot |
+| `Ctrl+,` | Open Settings |
+| `Esc` | Close an open menu or leave fullscreen |
+
+The short seek step, long seek step, volume step, and other player behavior
+can be changed in Settings.
+
+## Building from source
+
+Install Rust with [rustup](https://rustup.rs/), then install the platform
+dependencies:
+
+- **Linux (Ubuntu/Debian):**
+  `sudo apt install libmpv-dev libxkbcommon-dev libfontconfig1-dev`
+- **Linux (Arch):** install the equivalent `mpv`, `libxkbcommon`, and
+  `fontconfig` development packages.
+- **macOS:** `brew install mpv`
+- **Windows:** the repository includes the required `mpv-dev/` directory,
+  including `libmpv-2.dll` and an MSVC-compatible `mpv.lib`. No separate mpv
+  download is needed.
+
+Run the application with:
+
+```text
 cargo run --release
 ```
 
-## What's here / not here
+Run the same checks used by continuous integration with:
 
-A Slint player over libmpv with Frame Player's controls and its torrent
-streaming:
+```text
+cargo build --profile ci --locked
+cargo test --profile ci --locked
+```
 
-- **Start screen**: open a file, open a link — a magnet, a `.torrent`, or
-  any URL mpv plays — or browse free music. Torrents already on disk are listed with their size and
-  where you left off; click one to continue, or delete it (just the watched
-  episodes, or everything).
-- **Torrent streaming**: a magnet resolves to its file list, you pick what to
-  watch, and the other videos queue around it. Only the file being played is
-  downloaded, seeding is off, subtitles inside the release are attached, and
-  the next episode is fetched once the current one is complete. The seekbar
-  shades what is already on disk; a readout top-right gives peers and speed
-  and says when playback is waiting for data. Data lives in the app's cache
-  folder (`%LOCALAPPDATA%\CedarApple\cache\torrents` on Windows).
-- **Free Music**: search and browse Creative Commons and public-domain music
-  from Jamendo and the Internet Archive (with its Free Music Archive mirror):
-  genre chips, mood / licence / length filters, sort, album and artist pages,
-  "similar" radio, the licence on every track. Play or queue a song, or
-  download it with tags, cover and a `.licence.txt` (it then plays from disk).
-  Settings → Free Music holds the Jamendo client ID (free at
-  devportal.jamendo.com; without one only the Internet Archive is searched)
-  and the download folder. Also in the top bar and the right-click menu.
-- **Settings** (gear on the start screen and in the top bar, Ctrl+,): Vivi's
-  settings menu for what CedarApple has. Playback (hardware decoding, default
-  speed, repeat, precise seek, resume), Video (picture, deinterlacing, aspect,
-  snapshots), Audio (device, maximum and startup volume, loudness, language,
-  delay), Subtitles (language, encoding, auto-load, font, size, colours,
-  outline, shadow, position), Controls (skip and volume steps, scroll wheel),
-  Network, Performance, Privacy, General (mpv log) and Free Music. Changes
-  apply at once and are kept in `settings.json`.
-- **Controls**: drag-to-seek that shows the frame under the pointer and lands
-  exactly where you let go, chapter marks and names, queue, chapter, audio and
-  subtitle menus, repeat (off/all/one), volume, speed, fullscreen, an on-screen
-  readout for changes, and resume from where each file was left.
-- **Keys** (Frame Player's map): Space/K pause · ←/→ 5 s (Shift: 1 s) · J/L
-  10 s · Home/End · , / . frame step · [ / ] speed, Backspace resets ·
-  PgUp/PgDn previous/next · Ctrl+←/→ chapter · ↑/↓ volume · M mute · Shift+L
-  repeat · F/F11 fullscreen · O open file · Ctrl+L open a link · C info card ·
-  S snapshot · Ctrl+, settings. Skip and volume steps are set in Settings.
-  Right-click the picture for speed presets.
+On Windows, if `mpv-dev/libmpv-2.dll` is replaced with a compatible newer DLL,
+regenerate the import library with:
 
-Not yet: Frame Player's torrent settings (seeding, port forwarding, proxy,
-encryption, route — the engine supports them, CedarApple uses the defaults),
-seekbar thumbnails, casting and watch-together. Two older pieces
-still sit in the source but aren't wired to anything: a Seanime client
-(`src/backend/seanime/`) and a small scripting VM for `.pts` plugins
-(`src/extensions/`, documented in [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md)).
+```text
+powershell -File mpv-dev/gen_def.ps1
+```
 
-## Releases
+That command requires the Visual Studio Build Tools.
 
-Pushing a tag `vX.Y.Z` runs [.github/workflows/release.yml](.github/workflows/release.yml),
-which publishes a Windows zip (with the bundled `libmpv-2.dll`), a Linux
-tarball, an AppImage and a Flatpak. See [packaging/README.md](packaging/README.md).
+## Files and data
+
+CedarApple uses the platform-specific application data and cache directories
+provided by the `directories` crate. The exact parent differs by operating
+system; the important files are:
+
+- `history.json`: remembered torrents, watched torrent files, and resume
+  positions.
+- `settings.json`: player and UI settings.
+- `free-music.json`: Free Music settings.
+- `cache/torrents/`: torrent session data and downloaded torrent content.
+- `cache/free-music-covers/`: cached Free Music artwork.
+
+The in-app Settings dialog can also configure the screenshot folder and
+optional mpv log file.
+
+## Release artifacts
+
+Pushing a tag named `vX.Y.Z` runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml) and publishes:
+
+- A portable Windows x86_64 ZIP containing `cedarapple.exe`,
+  `libmpv-2.dll`, the bundled mpv scripts, and licences.
+- A Linux x86_64 tarball that expects libmpv to be installed on the system.
+- A Linux x86_64 AppImage with a slim libmpv build bundled.
+- A Linux x86_64 Flatpak bundle.
+
+The workflow also publishes SHA-256 checksums. See
+[packaging/README.md](packaging/README.md) for the manual packaging commands.
+
+## Project status and documentation
+
+The current UI is centered on direct file/link playback, torrent playback,
+and Free Music. The following components exist in the source tree but are not
+connected to the shipped UI:
+
+- `src/backend/seanime/`: a Seanime provider/client.
+- `src/extensions/`: the Parts `.pts` scripting VM and hot-reload bridge.
+
+See [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md) for the scripting runtime reference,
+[architecture.md](architecture.md) for the module overview, and
+[ports.md](ports.md) for the Frame Player and Vivi code that was ported.
+
+## License and attribution
+
+CedarApple is free software under the **GNU General Public License, version 3
+or later**; see [LICENSE](LICENSE). Copyright (c) 2026 skonester and
+Evgenii Zakharov.
+
+The torrent engine and related UI were ported from
+[Frame Player](https://github.com/risenxxx/frame-player), GPL-3.0-or-later,
+Copyright (c) Evgenii Zakharov. The Free Music browser, rendering changes, and
+Linux packaging were ported from
+[Vivi](https://github.com/Loafer19/vivi), MIT, Copyright (c) 2026 Ruslan
+Popelyshyn.
+
+Vendored `librqbit` crates are Apache-2.0. Additional inherited MIT notices and
+the Apache-2.0 text are kept in [licenses/](licenses/); changes to the vendored
+crates are described in [vendor/README-librqbit.md](vendor/README-librqbit.md).
