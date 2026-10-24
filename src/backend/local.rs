@@ -12,8 +12,9 @@ pub struct LocalProvider {
 
 impl LocalProvider {
     pub fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let videos_dir = PathBuf::from(home).join("Videos");
+        let videos_dir = directories::UserDirs::new()
+            .and_then(|d| d.video_dir().map(Path::to_path_buf))
+            .unwrap_or_default();
         Self {
             media_dir: videos_dir,
         }

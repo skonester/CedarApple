@@ -21,8 +21,8 @@
 //! others, and that cannot be seen from here without sending traffic. And it
 //! does not cover the loopback server mpv reads from, the casting server or the
 //! catalog: this is about the swarm.
-// Ported whole: the interface listing is for a route setting CedarApple does
-// not have a UI for yet; `resolve` and `scope_client` are what the session uses.
+// Settings → Torrents uses the interface listing; `resolve` and `scope_client`
+// apply the selected route to the session.
 #![allow(dead_code)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};

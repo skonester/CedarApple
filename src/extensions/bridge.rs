@@ -370,14 +370,18 @@ fn parts_http_get(url: String) -> Result<String, String> {
     if url.is_empty() {
         return Err("http_get requires a URL".to_string());
     }
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build().map_err(|e| e.to_string())?;
     let resp = client.get(&url).send().map_err(|e| e.to_string())?;
     resp.text().map_err(|e| e.to_string())
 }
 
 #[parts_native]
 fn parts_http_post(url: String, body: String) -> Result<String, String> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build().map_err(|e| e.to_string())?;
     let resp = client
         .post(&url)
         .body(body)
@@ -393,7 +397,9 @@ fn parts_http_request(
     headers_val: Value,
     body: String,
 ) -> Result<String, String> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build().map_err(|e| e.to_string())?;
     let method_parsed = match method.to_uppercase().as_str() {
         "GET" => reqwest::Method::GET,
         "POST" => reqwest::Method::POST,
@@ -565,7 +571,12 @@ fn call_parts_method(
         let map = obj_ref.borrow();
         let method_hash = Value::String(method_name.to_string().into()).get_hash();
         if let Some(method_val) = map.get(&method_hash) {
-            match method_val.call(args, constants.to_vec()) {
+            // Some VM runtime errors panic. Keep that failure inside the
+            // script worker and return it to the browser as a provider error.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                method_val.call(args, constants.to_vec())
+            })).map_err(|_| format!("Script panicked while calling {method_name}"))?;
+            match result {
                 Ok(Some(res)) => Ok(res),
                 Ok(None) => Ok(Value::Bool(false)),
                 Err(e) => Err(format!("Error calling {}: {}", method_name, e)),
@@ -709,6 +720,11 @@ fn spawn_script_worker(
         };
 
         let constants = run_res.constants;
+
+        if !matches!(script_obj, Value::Object(_)) {
+            let _ = init_tx_clone.send(Err(AmpError::Plugin("Script must return an object".into())));
+            return;
+        }
 
         if let Value::Object(ref_cell) = &script_obj {
             let obj = ref_cell.borrow();
@@ -1036,23 +1052,26 @@ impl PartsExtensionBridge {
         }
 
         let mut loaded = Vec::new();
+        let mut errors = Vec::new();
         for (name, path) in scripts_to_load {
             let (init_tx, init_rx) = std::sync::mpsc::channel();
             let tx = spawn_script_worker(name.clone(), path.clone(), self.config.clone(), init_tx);
-            if let Ok(Ok(())) = init_rx.recv() {
-                loaded.push(LoadedScript { name, path, tx });
+            match init_rx.recv_timeout(std::time::Duration::from_secs(15)) {
+                Ok(Ok(())) => loaded.push(LoadedScript { name, path, tx }),
+                Ok(Err(e)) => errors.push(format!("{name}: {e}")),
+                Err(e) => errors.push(format!("{name}: {e}")),
             }
         }
 
         let mut guard = self.scripts.write().unwrap();
         *guard = loaded;
-        Ok(())
+        if errors.is_empty() { Ok(()) } else { Err(ExtensionError::VmError(errors.join("; "))) }
     }
 
     pub fn load_single_script(&self, name: &str, path: PathBuf) -> Result<(), ExtensionError> {
         let (init_tx, init_rx) = std::sync::mpsc::channel();
         let tx = spawn_script_worker(name.to_string(), path.clone(), self.config.clone(), init_tx);
-        match init_rx.recv() {
+        match init_rx.recv_timeout(std::time::Duration::from_secs(15)) {
             Ok(Ok(())) => {
                 let mut guard = self.scripts.write().unwrap();
                 guard.retain(|s| s.name != name && s.path != path);
@@ -1075,6 +1094,14 @@ impl PartsExtensionBridge {
                 .tx
                 .send(ScriptRequest::OnPlaybackUpdate(info.clone()));
         }
+    }
+
+    pub fn script_names(&self) -> Vec<String> {
+        self.scripts.read().unwrap().iter().map(|s| s.name.clone()).collect()
+    }
+
+    pub fn unload_script(&self, path: &Path) {
+        self.scripts.write().unwrap().retain(|s| s.path != path);
     }
 
     pub fn notify_playback_stop(&self) {
@@ -1114,7 +1141,7 @@ impl ExtensionBridge for PartsExtensionBridge {
                 .tx
                 .send(ScriptRequest::VmCommand { cmd, arg, resp_tx })
                 .is_ok()
-                && let Ok(Err(e)) = resp_rx.recv()
+                && let Ok(Err(e)) = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
             {
                 return Err(ExtensionError::VmError(e));
             }
@@ -1158,9 +1185,9 @@ impl MediaProvider for PartsExtensionBridge {
         let mut all_items = Vec::new();
         for script in scripts {
             let (resp_tx, resp_rx) = std::sync::mpsc::channel();
-            if script.tx.send(ScriptRequest::GetRoot { resp_tx }).is_ok()
-                && let Ok(Ok(items)) = resp_rx.recv()
-            {
+            if script.tx.send(ScriptRequest::GetRoot { resp_tx }).is_ok() {
+                let items = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
+                    .map_err(|e| AmpError::Plugin(format!("{}: {e}", script.name)))??;
                 for mut item in items {
                     if script.name != "fallback" {
                         item.id = format!("{}::{}", script.name, item.id);
@@ -1193,8 +1220,9 @@ impl MediaProvider for PartsExtensionBridge {
                     resp_tx,
                 })
                 .is_ok()
-                && let Ok(res) = resp_rx.recv()
             {
+                let res = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
+                    .map_err(|e| AmpError::Plugin(format!("{}: {e}", script.name)))?;
                 return res.map(|items| {
                     items
                         .into_iter()
@@ -1216,9 +1244,9 @@ impl MediaProvider for PartsExtensionBridge {
         let mut all_items = Vec::new();
         for script in scripts {
             let (resp_tx, resp_rx) = std::sync::mpsc::channel();
-            if script.tx.send(ScriptRequest::GetNextUp { resp_tx }).is_ok()
-                && let Ok(Ok(items)) = resp_rx.recv()
-            {
+            if script.tx.send(ScriptRequest::GetNextUp { resp_tx }).is_ok() {
+                let items = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
+                    .map_err(|e| AmpError::Plugin(format!("{}: {e}", script.name)))??;
                 for mut item in items {
                     if script.name != "fallback" {
                         item.id = format!("{}::{}", script.name, item.id);
@@ -1242,8 +1270,9 @@ impl MediaProvider for PartsExtensionBridge {
                     resp_tx,
                 })
                 .is_ok()
-                && let Ok(Ok(items)) = resp_rx.recv()
             {
+                let items = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
+                    .map_err(|e| AmpError::Plugin(format!("{}: {e}", script.name)))??;
                 for mut item in items {
                     if script.name != "fallback" {
                         item.id = format!("{}::{}", script.name, item.id);
@@ -1276,7 +1305,7 @@ impl MediaProvider for PartsExtensionBridge {
                     resp_tx,
                 })
                 .is_ok()
-                && let Ok(url) = resp_rx.recv()
+                && let Ok(url) = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
                 && !url.is_empty()
             {
                 return url;
@@ -1306,7 +1335,7 @@ impl MediaProvider for PartsExtensionBridge {
                     resp_tx,
                 })
                 .is_ok()
-                && let Ok(res) = resp_rx.recv()
+                && let Ok(res) = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
             {
                 return res;
             }
@@ -1339,7 +1368,7 @@ impl MediaProvider for PartsExtensionBridge {
                     resp_tx,
                 })
                 .is_ok()
-                && let Ok(res) = resp_rx.recv()
+                && let Ok(res) = resp_rx.recv_timeout(std::time::Duration::from_secs(15))
             {
                 return res;
             }
@@ -1369,7 +1398,7 @@ impl MediaProvider for PartsExtensionBridge {
                 })
                 .is_ok()
             {
-                let _ = resp_rx.recv();
+                let _ = resp_rx.recv_timeout(std::time::Duration::from_secs(15));
             }
         }
         Ok(())
@@ -1404,7 +1433,7 @@ impl MediaProvider for PartsExtensionBridge {
                 })
                 .is_ok()
             {
-                let _ = resp_rx.recv();
+                let _ = resp_rx.recv_timeout(std::time::Duration::from_secs(15));
             }
         }
         Ok(())
@@ -1437,7 +1466,7 @@ impl MediaProvider for PartsExtensionBridge {
                 })
                 .is_ok()
             {
-                let _ = resp_rx.recv();
+                let _ = resp_rx.recv_timeout(std::time::Duration::from_secs(15));
             }
         }
         Ok(())
@@ -1466,7 +1495,7 @@ impl MediaProvider for PartsExtensionBridge {
                 })
                 .is_ok()
             {
-                let _ = resp_rx.recv();
+                let _ = resp_rx.recv_timeout(std::time::Duration::from_secs(15));
             }
         }
         Ok(())
@@ -1477,6 +1506,38 @@ impl MediaProvider for PartsExtensionBridge {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicI64, Ordering};
+
+    #[test]
+    fn provider_navigation_reload_failure_and_removal() {
+        let path = std::env::temp_dir().join(format!("cedarapple-provider-{}.pts", std::process::id()));
+        std::fs::write(&path, r#"
+            return |>
+                get_root: fun() {
+                    return |> 0: |> id: "series", name: "Series", item_type: "Folder" <|, len: 1 <|;
+                },
+                get_children: fun(parent_id) {
+                    return |> 0: |> id: __joinStr(parent_id, "-episode"), name: "Episode", item_type: "Playable" <|, len: 1 <|;
+                },
+                get_stream_url: fun(item_id) { return __joinStr("https://example.com/", item_id); }
+            <|;
+        "#).unwrap();
+        let bridge = PartsExtensionBridge::new();
+        bridge.load_single_script("catalog", path.clone()).unwrap();
+        let root = futures::executor::block_on(bridge.get_root()).unwrap();
+        assert_eq!(root[0].id, "catalog::series");
+        let children = futures::executor::block_on(bridge.get_children(&root[0].id)).unwrap();
+        assert_eq!(children[0].id, "catalog::series-episode");
+        assert_eq!(bridge.get_stream_url(&children[0].id), "https://example.com/series-episode");
+        std::fs::write(&path, "return false;").unwrap();
+        assert!(bridge.load_single_script("catalog", path.clone()).is_err());
+        assert_eq!(futures::executor::block_on(bridge.get_root()).unwrap(), root);
+        std::fs::write(&path, r#"return |> get_root: fun() { return 1 + "invalid"; } <|;"#).unwrap();
+        bridge.load_single_script("catalog", path.clone()).unwrap();
+        assert!(futures::executor::block_on(bridge.get_root()).is_err());
+        bridge.unload_script(&path);
+        assert!(futures::executor::block_on(bridge.get_root()).unwrap().is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
 
     struct DummyController {
         played: AtomicI64,

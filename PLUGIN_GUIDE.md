@@ -1,12 +1,11 @@
 # CedarApple Plugin & Extension Guide
 
-> **Note:** this documents the Parts VM and its native function API as implemented in
-> `src/extensions/`. The current build's UI is a plain player with no library/browse screen,
-> and nothing in `main.rs` currently loads scripts from a plugins directory or dispatches
-> into this bridge - treat this as a reference for the scripting runtime itself, not a
-> description of what the shipped app does today.
+Enable **Parts plugins** in **Settings → Library**, then click **Apply**.
+Use **Open folder** to find the script directory. Enabled scripts load on startup,
+receive playback events, and can control the player. Their media-provider hooks
+are browsable in **Library → Parts plugins**. Load errors appear in the Library.
 
-CedarApple plugins and extensions are written in the **Parts** scripting language (`.pts` files). Scripts run inside an embedded Parts virtual machine runtime, providing high performance, sandboxed execution, and instant live hot-reloading without compilation.
+CedarApple plugins and extensions are written in the **Parts** scripting language (`.pts` files). Scripts run in an embedded VM with network access and player controls. Install only scripts you trust. Edits reload without compilation.
 
 A single Parts script can serve as:
 - **Playback Extension**: React to playback events, track watch progress, integrate with external APIs (scrobbling, Discord RPC, AniList, etc.), or control the player.
@@ -21,13 +20,12 @@ A single Parts script can serve as:
 
 `src/extensions::bridge::get_parts_dir()` resolves the default Parts directory via the
 `directories` crate's per-OS config dir (e.g. `~/.config/cedarapple/plugins/parts` on Linux,
-`%APPDATA%\CedarApple\config\plugins\parts` on Windows) - the same helper `ExtensionBridge`
-uses when its `load_scripts()`/watcher API is invoked directly, since there's no in-app
-settings screen exposing a custom `script_path` field anymore.
+`%APPDATA%\CedarApple\config\plugins\parts` on Windows). The **Open folder** action
+uses this helper, so it points to the actual directory for the current platform.
 
-`ExtensionWatcher` (`src/extensions/watcher.rs`) still implements hot-reload: when wired up
-and pointed at a directory, editing and saving a `.pts` file there reloads the script live
-without restarting the app.
+`ExtensionWatcher` (`src/extensions/watcher.rs`) watches this directory while plugins
+are enabled. Adding or editing a `.pts` file reloads it; deleting it unloads it.
+Failed reloads preserve the last working script and show an error in the Library.
 
 ---
 
@@ -39,7 +37,7 @@ Every Parts script must evaluate to and return an object (`|> ... <|`) containin
 return |>
     // Playback Extension Hooks
     on_playback_update: fun(info) {
-        log("Playing: " + to_string(info.title));
+        log(__joinStr("Playing: ", to_string(info.title)));
     },
     on_playback_stop: fun() {
         log("Playback stopped");
@@ -120,7 +118,8 @@ CedarApple registers native functions into the Parts runtime:
   - `5`: Stop
   - `6`: Next
   - `7`: Previous
-- `mutate_ui_slot(slot_id, data_ptr)`: Dispatches UI slot mutations to the frontend.
+- `mutate_ui_slot(slot_id, data_ptr)`: Bridge API reserved for host UI integrations.
+  The shipped player has no arbitrary layout slots; this returns false without a handler.
 
 ---
 

@@ -45,14 +45,9 @@
 //! means no fixed port to collide with a second instance and nothing reachable
 //! from the network.
 //!
-//! Not done here, and deliberately: buffered ranges on the seekbar. librqbit
-//! keeps the piece bitmap behind `pub(crate) with_chunk_tracker`, so the finest
-//! public measure is `TorrentStats::file_progress` — bytes per file, which is a
-//! percentage and not a map. Drawing *where* the holes are needs either an
-//! upstream accessor or our own tracking of what the stream has served.
-// Ported whole: the preference setters (seeding, port forwarding, proxy,
-// encryption, route), `relocate` and the offline/local-path helpers have no
-// CedarApple UI yet, and are kept so wiring one up is a UI change only.
+//! Buffered ranges use librqbit's public piece bitmap; see `buffered`.
+// Settings drives the session preferences; `relocate` and offline/local-path
+// helpers remain available for future storage and thumbnail UI.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
@@ -305,8 +300,8 @@ struct Inner {
 /// preference, and the one added next is the one somebody forgets — which fails
 /// in the quietest way available, as a setting that appears to save and does
 /// nothing at all until the app is restarted. Here it is one `==`.
-#[derive(Clone, Default, PartialEq, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct SessionPrefs {
     /// Upload to other peers while streaming. Off by default — see `set_seeding`.
     pub seeding: bool,
@@ -351,7 +346,7 @@ pub struct SessionPrefs {
 /// the protocol has nothing to match. What it does **not** hide is who is being
 /// talked to, nor the DHT and the trackers, which are their own plaintext
 /// sockets — see `SessionPrefs::proxy` for the other half of that story.
-#[derive(Clone, Copy, Default, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Encryption {
     /// Plaintext only, which is what every release before this one did.

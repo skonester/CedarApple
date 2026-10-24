@@ -1,0 +1,147 @@
+import { Theme } from "./theme.slint";
+import { DialogFrame, DialogButton } from "./dialogs.slint";
+import { SettingsState } from "./settings.slint";
+import { Dropdown, Field } from "./widgets.slint";
+import { ScrollView, Spinner } from "std-widgets.slint";
+
+export struct LibraryRow {
+    title: string,
+    detail: string,
+    folder: bool,
+}
+
+export global LibraryState {
+    in-out property <bool> open;
+    in-out property <bool> busy;
+    in-out property <[string]> sources;
+    in-out property <string> source;
+    in-out property <[LibraryRow]> rows;
+    in-out property <string> location;
+    in-out property <string> error;
+    in-out property <string> status;
+    in-out property <bool> can-back;
+    in-out property <string> query;
+    callback opened();
+    callback closed();
+    callback source-picked(string);
+    callback item-picked(int);
+    callback back();
+    callback home();
+    callback search(string);
+    callback refresh();
+    callback next-up();
+}
+
+export component LibraryDialog inherits Rectangle {
+    public function focus-keys() { keys.focus(); }
+    property <bool> settings-open: SettingsState.open;
+    changed settings-open => {
+        if (!root.settings-open && LibraryState.open) { keys.focus(); }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                LibraryState.closed();
+                return accept;
+            }
+            return reject;
+        }
+        DialogFrame {
+            title: "Library";
+            panel-width: 920px;
+            body-height: 570px;
+            close => { LibraryState.closed(); }
+            VerticalLayout {
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Dropdown {
+                        width: 180px;
+                        options: LibraryState.sources;
+                        value: LibraryState.source;
+                        picked(s) => { LibraryState.source-picked(s); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    DialogButton { text: "Refresh"; enabled: !LibraryState.busy; clicked => { LibraryState.refresh(); } }
+                    DialogButton { text: "Configure…"; clicked => { SettingsState.opened("Library"); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    DialogButton { text: "Back"; enabled: LibraryState.can-back && !LibraryState.busy; clicked => { LibraryState.back(); } }
+                    DialogButton { text: "Home"; enabled: !LibraryState.busy; clicked => { LibraryState.home(); } }
+                    DialogButton { text: "Continue watching"; enabled: !LibraryState.busy; clicked => { LibraryState.next-up(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                Text {
+                        text: LibraryState.location;
+                        color: Theme.text-dim;
+                        font-size: 12px;
+                        overflow: elide;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    search-box := Field {
+                        horizontal-stretch: 1;
+                        text <=> LibraryState.query;
+                        placeholder: "Search this source…";
+                        accepted => { LibraryState.search(self.text); }
+                    }
+                    DialogButton { text: "Search"; enabled: !LibraryState.busy; clicked => { LibraryState.search(search-box.text); } }
+                }
+                if LibraryState.error != "" : Text {
+                    text: LibraryState.error;
+                    color: Theme.error;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if LibraryState.busy : HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Spinner { indeterminate: true; width: 20px; height: 20px; }
+                    Text { text: "Loading…"; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+                }
+                results := ScrollView {
+                    vertical-stretch: 1;
+                    viewport-width: self.visible-width;
+                    viewport-height: list.preferred-height;
+                    property <string> page: LibraryState.location;
+                    changed page => { self.viewport-y = 0; }
+                    list := VerticalLayout {
+                        width: results.visible-width - 12px;
+                        alignment: start;
+                        spacing: 4px;
+                        for row[index] in LibraryState.rows : Rectangle {
+                            height: 58px;
+                            border-radius: 8px;
+                            background: touch.has-hover ? Theme.menu-hover : #ffffff08;
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 12px;
+                                Text { text: row.folder ? "▸" : "▶"; color: Theme.accent; font-size: 17px; width: 20px; vertical-alignment: center; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 4px;
+                                    Text { text: row.title; color: Theme.text; font-size: 13px; overflow: elide; }
+                                    Text { text: row.detail; color: Theme.muted; font-size: 11px; overflow: elide; }
+                                }
+                            }
+                            touch := TouchArea {
+                                enabled: !LibraryState.busy;
+                                mouse-cursor: LibraryState.busy ? default : pointer;
+                                clicked => { LibraryState.item-picked(index); }
+                            }
+                        }
+                        if !LibraryState.busy && LibraryState.rows.length == 0 && LibraryState.error == "" : Text {
+                            text: "No media found. Configure a library folder or enable another source.";
+                            color: Theme.text-dim;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                Text { text: LibraryState.status; color: Theme.muted; font-size: 11.5px; wrap: word-wrap; }
+            }
+        }
+    }
+}

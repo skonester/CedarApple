@@ -48,18 +48,14 @@ dialog of CedarApple's own, reqwest and a JSON file).
 
 ## Next, in order
 
-1. **Torrent settings.** `TorrentService` already has `set_seeding`,
-   `set_port_forward`, `set_proxy`, `set_encryption` and `set_route`;
-   CedarApple always passes `SessionPrefs::default()`. Port the torrent part
-   of `SettingsDialog.svelte` and persist the choices beside `history.json`.
-2. **Recent files on the start screen.** Positions are already saved per file
+1. **Recent files on the start screen.** Positions are already saved per file
    (`history.rs`); `StartScreen.svelte`'s "Continue watching" rail is the
    missing view.
-3. **Seekbar thumbnails.** Port `thumb_service.rs` (it needs `ffmpeg-the-third`)
+2. **Seekbar thumbnails.** Port `thumb_service.rs` (it needs `ffmpeg-the-third`)
    and `thumbs.svelte.ts`. `torrent_offline_file` and `local_path` are already
    here for thumbnails of torrent files.
-4. **Folding the control row** at narrow widths (`MoreMenu.svelte`).
-5. **Torrent updates**: `relocate` is ported; `updateTorrent` and the RSS
+3. **Folding the control row** at narrow widths (`MoreMenu.svelte`).
+4. **Torrent updates**: `relocate` is ported; `updateTorrent` and the RSS
    feed (`feed.rs`) are not.
 
 Casting, watch-together, the catalog and the updater are separate product

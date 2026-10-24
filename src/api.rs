@@ -94,6 +94,8 @@ pub trait MediaProvider: Send + Sync {
     fn get_persistable_config(&self) -> HashMap<String, String>;
 
     async fn get_resume_position(&self, item_id: &str) -> Result<Option<i64>, AmpError>;
+    /// Actual duration from the decoder, for accurate watch-history updates.
+    fn set_playback_duration(&self, _item_id: &str, _seconds: f64) {}
     async fn report_playback_start(&self, item_id: &str) -> Result<(), AmpError>;
     async fn report_playback_progress(
         &self,

@@ -55,6 +55,12 @@ impl ExtensionWatcher {
             while running.load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_millis(800));
 
+                let removed: Vec<_> = file_mtimes.keys().filter(|p| !p.exists()).cloned().collect();
+                for path in removed {
+                    file_mtimes.remove(&path);
+                    on_change(path.to_string_lossy().into_owned());
+                }
+
                 for dir in &watch_dirs {
                     if let Ok(entries) = std::fs::read_dir(dir) {
                         for entry in entries.flatten() {
@@ -65,7 +71,7 @@ impl ExtensionWatcher {
                                 && let Ok(mtime) = meta.modified()
                             {
                                 let is_changed = match file_mtimes.get(&path) {
-                                    Some(&prev_time) => mtime > prev_time,
+                                    Some(&prev_time) => mtime != prev_time,
                                     None => true,
                                 };
 
@@ -99,5 +105,30 @@ impl ExtensionWatcher {
 impl Drop for ExtensionWatcher {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watches_added_edited_and_deleted_scripts() {
+        let dir = std::env::temp_dir().join(format!("cedarapple-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("example.pts");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = ExtensionWatcher::new();
+        watcher.start(vec![dir.clone()], move |p| { let _ = tx.send(p); });
+        // Let the initial snapshot finish before adding the first file.
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(&path, "return |> <|;").unwrap();
+        assert_eq!(PathBuf::from(rx.recv_timeout(Duration::from_secs(4)).unwrap()), path);
+        std::fs::write(&path, "return |> name: 'edited' <|;").unwrap();
+        assert_eq!(PathBuf::from(rx.recv_timeout(Duration::from_secs(4)).unwrap()), path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(PathBuf::from(rx.recv_timeout(Duration::from_secs(4)).unwrap()), path);
+        watcher.stop();
+        std::fs::remove_dir(dir).unwrap();
     }
 }

@@ -10,6 +10,7 @@ mod discord;
 mod extensions;
 mod free_music;
 mod image_cache;
+mod library;
 mod history;
 mod navigation;
 mod net_route;
@@ -83,10 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize Discord RPC
     let discord = Arc::new(DiscordRPC::new());
 
-    // The "local" provider resolves an on-disk path directly, which is all
-    // the Open File flow needs. The Seanime client (src/backend/seanime)
-    // and the Parts scripting bridge (src/extensions) still exist but have
-    // no UI wired to them right now - see README.md.
+    // The direct-file provider is available before Library installs its
+    // configured sources below.
     let local_provider = Arc::new(LocalProvider::new());
     {
         let mut s = state.lock().unwrap();
@@ -275,6 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Settings first: mpv's options are set before anything opens.
     settings::install(&ui, mpv.clone());
     let timers = playback::install(&ui, mpv.clone(), state.clone(), discord.clone());
+    library::install(&ui, state.clone());
     // The Free Music browser (src/free_music), which plays through playback.
     let music_timer = free_music::install(&ui);
 
@@ -350,6 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = ui.run();
     eprintln!("[CedarApple] Event loop exited.");
     playback::shutdown();
+    library::shutdown();
     drop(timers);
     drop(music_timer);
 

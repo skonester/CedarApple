@@ -9,7 +9,7 @@ use super::{MediaMetadata, MediaProvider as AppMediaProvider};
 use crate::api::{AmpError, MediaItem, MediaItemType, MediaProvider, RawImage};
 use crate::player::SessionError;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -21,6 +21,7 @@ pub struct SeanimeProvider {
     durations: Arc<RwLock<HashMap<String, f64>>>,
     total_episodes: Arc<RwLock<HashMap<i32, i32>>>,
     ws_sender: Arc<RwLock<Option<SeanimeWsSender>>>,
+    completed: RwLock<HashSet<String>>,
 }
 
 impl SeanimeProvider {
@@ -33,6 +34,7 @@ impl SeanimeProvider {
             durations: Arc::new(RwLock::new(HashMap::new())),
             total_episodes: Arc::new(RwLock::new(HashMap::new())),
             ws_sender: Arc::new(RwLock::new(None)),
+            completed: RwLock::new(HashSet::new()),
         }
     }
 
@@ -162,6 +164,10 @@ impl AppMediaProvider for SeanimeProvider {
 
 #[async_trait]
 impl MediaProvider for SeanimeProvider {
+    fn set_playback_duration(&self, item_id: &str, seconds: f64) {
+        self.set_item_duration(item_id, seconds);
+    }
+
     async fn get_root(&self) -> Result<Vec<MediaItem>, AmpError> {
         let collection = self
             .client
@@ -503,7 +509,7 @@ impl MediaProvider for SeanimeProvider {
                     .read()
                     .ok()
                     .and_then(|g| g.get(item_id).cloned())
-                    .unwrap_or(1440.0);
+                    .unwrap_or(0.0);
 
                 if let Ok(guard) = self.ws_sender.read()
                     && let Some(sender) = guard.as_ref()
@@ -532,7 +538,7 @@ impl MediaProvider for SeanimeProvider {
                     .read()
                     .ok()
                     .and_then(|g| g.get(item_id).cloned())
-                    .unwrap_or(1440.0);
+                    .unwrap_or(0.0);
 
                 // 1. Sync over WebSocket to Seanime
                 if let Ok(guard) = self.ws_sender.read()
@@ -553,17 +559,20 @@ impl MediaProvider for SeanimeProvider {
                     .read()
                     .ok()
                     .and_then(|g| g.get(&media_id).cloned())
-                    .unwrap_or(24);
+                    .unwrap_or(0);
 
-                if duration > 0.0 && (position_secs as f64) >= (duration * 0.85) {
+                if duration > 0.0 && total_eps > 0 && (position_secs as f64) >= (duration * 0.85)
+                    && self.completed.write().unwrap().insert(item_id.to_string()) {
                     eprintln!(
                         "[SeanimeProvider] Watched >= 85% ({:.1}s / {:.1}s) - marking Ep {} completed",
                         position_secs as f64, duration, ep_num
                     );
-                    let _ = self
+                    if self
                         .client
                         .update_progress(media_id, ep_num, total_eps, None)
-                        .await;
+                        .await.is_err() {
+                        self.completed.write().unwrap().remove(item_id);
+                    }
                 }
             }
         }
@@ -586,7 +595,7 @@ impl MediaProvider for SeanimeProvider {
                     .read()
                     .ok()
                     .and_then(|g| g.get(item_id).cloned())
-                    .unwrap_or(1440.0);
+                    .unwrap_or(0.0);
 
                 // 1. Send WebSocket stopped & terminated event
                 if let Ok(guard) = self.ws_sender.read()
@@ -608,17 +617,20 @@ impl MediaProvider for SeanimeProvider {
                     .read()
                     .ok()
                     .and_then(|g| g.get(&media_id).cloned())
-                    .unwrap_or(24);
+                    .unwrap_or(0);
 
-                if duration > 0.0 && (position_secs as f64) >= (duration * 0.85) {
+                if duration > 0.0 && total_eps > 0 && (position_secs as f64) >= (duration * 0.85)
+                    && self.completed.write().unwrap().insert(item_id.to_string()) {
                     eprintln!(
                         "[SeanimeProvider] Stopped at >= 85% ({:.1}s / {:.1}s) - marking Ep {} completed",
                         position_secs as f64, duration, ep_num
                     );
-                    let _ = self
+                    if self
                         .client
                         .update_progress(media_id, ep_num, total_eps, None)
-                        .await;
+                        .await.is_err() {
+                        self.completed.write().unwrap().remove(item_id);
+                    }
                 }
             }
         }

@@ -14,11 +14,13 @@ import { StartScreen } from "./start.slint";
 import { LinkDialog, PickDialog } from "./dialogs.slint";
 import { MusicDialog, MusicCard, FreeMusicState } from "./music.slint";
 import { SettingsDialog, SettingsState } from "./settings.slint";
+import { LibraryDialog, LibraryState } from "./library.slint";
 import { Spinner } from "std-widgets.slint";
 
 export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter, SettingRow } from "./types.slint";
 export { FreeMusicState } from "./music.slint";
 export { SettingsState } from "./settings.slint";
+export { LibraryState, LibraryRow } from "./library.slint";
 
 // A text button in the top bar, for CedarApple's own mpv-side tools.
 component BarTextButton inherits Rectangle {
@@ -197,9 +199,13 @@ export component AppWindow inherits Window {
         }
     }
     property <bool> settings-open: SettingsState.open;
+    property <bool> library-open: LibraryState.open;
+    changed library-open => {
+        if (!root.library-open) { key-handler.focus(); }
+    }
     changed settings-open => {
         // Back to the keys, unless Settings was opened from Free Music.
-        if (!root.settings-open && !FreeMusicState.open) {
+        if (!root.settings-open && !FreeMusicState.open && !LibraryState.open) {
             key-handler.focus();
         }
     }
@@ -354,6 +360,7 @@ export component AppWindow inherits Window {
         open-file => { root.open_file(); }
         open-link => { root.open-link(); }
         open-music => { FreeMusicState.opened(); }
+        open-library => { LibraryState.opened(); }
         open-settings => { SettingsState.opened(""); }
         open-torrent(folder) => { root.open_torrent_row(folder); }
         reveal-torrent(folder) => { root.reveal_torrent_row(folder); }
@@ -421,6 +428,11 @@ export component AppWindow inherits Window {
                     tip: "Settings (Ctrl+,)";
                     tip-below: true;
                     clicked => { SettingsState.opened(""); }
+                }
+                BarTextButton {
+                    text: "Library";
+                    tip: "Browse media sources";
+                    clicked => { LibraryState.opened(); }
                 }
                 BarTextButton {
                     text: "i";
@@ -819,6 +831,10 @@ export component AppWindow inherits Window {
                 clicked => { root.ctx-open = false; FreeMusicState.opened(); }
             }
             MenuItem {
+                text: "Library…";
+                clicked => { root.ctx-open = false; LibraryState.opened(); }
+            }
+            MenuItem {
                 text: "Settings…";
                 note: "Ctrl+,";
                 clicked => { root.ctx-open = false; SettingsState.opened(""); }
@@ -885,6 +901,10 @@ export component AppWindow inherits Window {
 
     if FreeMusicState.open : MusicDialog {
         init => { self.focus-input(); }
+    }
+
+    if LibraryState.open : LibraryDialog {
+        init => { self.focus-keys(); }
     }
 
     if SettingsState.open : SettingsDialog {

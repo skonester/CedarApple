@@ -20,13 +20,13 @@
 //! has to wait (the torrent engine, file dialogs) runs on tokio and comes back
 //! through `on_ui`, which hands it the same `Ctx`.
 
-use crate::api::{PlaybackExtension, PlaybackInfo};
+use crate::api::{DynProvider, MediaItem, PlaybackExtension, PlaybackInfo};
 use crate::app_state::AppState;
 use crate::discord::DiscordRPC;
 use crate::history;
 use crate::player::MpvHandle;
 use crate::scrub::{DRAG_SETTLE, Scrub};
-use crate::torrent::{SessionPrefs, TorrentInfo, TorrentService};
+use crate::torrent::{TorrentInfo, TorrentService};
 use crate::torrent_ui::*;
 use crate::{AppWindow, Band, ChapterInfo, PickFile, QueueEntry, TorrentRowData, TrackInfo};
 use libmpv_sys::*;
@@ -60,7 +60,20 @@ struct QueueItem {
     torrent: Option<(String, usize)>,
     /// Path inside the torrent, for matching subtitles and watched names.
     torrent_path: String,
+    provider: Option<ProviderItem>,
 }
+
+#[derive(Clone)]
+struct ProviderItem {
+    provider_id: String,
+    provider: DynProvider,
+    item: MediaItem,
+    resume: Option<i64>,
+}
+
+// Opening and changing preferences share a gate. Cancelling a pending open
+// releases it before the settings stop the old session.
+static TORRENT_OPS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A start-screen torrent row, as the row's buttons need it.
 struct RowInfo {
@@ -101,6 +114,11 @@ struct Ctx {
     peerless_since: Cell<Option<Instant>>,
     subs_attached_for: RefCell<String>,
     prefetched: RefCell<HashSet<String>>,
+    torrent_open: RefCell<Option<tokio::task::JoinHandle<()>>>,
+    torrent_generation: Cell<u64>,
+    reported_item: RefCell<Option<QueueItem>>,
+    reported_position: Cell<i64>,
+    report_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 thread_local! {
@@ -184,6 +202,7 @@ impl Ctx {
             return;
         }
         self.save_position();
+        self.report_stopped();
         let start = start.min(items.len() - 1);
 
         // A different torrent (or none) replaces the one feeding the player.
@@ -263,6 +282,8 @@ impl Ctx {
     /// Back to the start screen.
     fn close_file(&self) {
         self.save_position();
+        self.report_stopped();
+        crate::library::playback_stopped();
         self.mpv.command(&["stop"]);
         self.queue.borrow_mut().clear();
         self.release_torrent();
@@ -369,6 +390,15 @@ impl Ctx {
         });
 
         let Some(item) = self.current() else { return };
+        self.report_stopped();
+        *self.reported_item.borrow_mut() = Some(item.clone());
+        self.reported_position.set(0);
+        if let Some(p) = &item.provider {
+            let provider = p.provider.clone();
+            let id = p.item.id.clone();
+            provider.set_playback_duration(&id, self.mpv.get_double("duration").unwrap_or(0.0));
+            tokio::task::spawn_blocking(move || futures::executor::block_on(provider.report_playback_start(&id)));
+        }
         if !item.id.is_empty()
             && crate::settings::get().playback.resume
             && let Some(p) = history::position(&item.id)
@@ -378,6 +408,10 @@ impl Ctx {
             self.mpv
                 .command(&["seek", &format!("{:.3}", p.pos), "absolute+exact"]);
             self.osd("Resuming", None);
+        } else if crate::settings::get().playback.resume
+            && let Some(resume) = item.provider.as_ref().and_then(|p| p.resume).filter(|p| *p > 3)
+        {
+            self.mpv.command(&["seek", &resume.to_string(), "absolute+exact"]);
         }
 
         if let (Some((hash, _)), Some(info)) = (&item.torrent, self.torrent_info.borrow().as_ref())
@@ -388,6 +422,15 @@ impl Ctx {
             for sub in torrent_subtitles(info, &item.torrent_path) {
                 self.mpv.command(&["sub-add", &sub.url, "auto"]);
             }
+        }
+    }
+
+    fn report_stopped(&self) {
+        if let Some(item) = self.reported_item.borrow_mut().take()
+            && let Some(p) = item.provider
+        {
+            let pos = self.reported_position.get();
+            tokio::task::spawn_blocking(move || futures::executor::block_on(p.provider.report_playback_stopped(&p.item.id, pos)));
         }
     }
 
@@ -486,6 +529,7 @@ impl Ctx {
         }
 
         let pos = mpv.get_double("time-pos");
+        if let Some(pos) = pos { self.reported_position.set(pos as i64); }
         let dur = mpv.get_double("duration").unwrap_or(0.0);
         let paused = mpv.get_flag("pause");
         if let Some(p) = pos
@@ -528,7 +572,9 @@ impl Ctx {
                 (s.current_title, s.current_artist) =
                     song.unwrap_or_else(|| (item.name.clone(), String::new()));
                 s.current_item_id = Some((
-                    if item.torrent.is_some() {
+                    if let Some(p) = &item.provider {
+                        p.provider_id.as_str()
+                    } else if item.torrent.is_some() {
                         "torrent"
                     } else if item.id.is_empty() {
                         "music"
@@ -536,8 +582,11 @@ impl Ctx {
                         "local"
                     }
                     .to_string(),
-                    item.id.clone(),
+                    item.provider.as_ref().map_or_else(|| item.id.clone(), |p| p.item.id.clone()),
                 ));
+                s.current_series_name = item.provider.as_ref().and_then(|p| p.item.series_name.clone());
+                s.current_episode_index = item.provider.as_ref().and_then(|p| p.item.index);
+                s.current_season_index = item.provider.as_ref().and_then(|p| p.item.season_index);
             }
         }
 
@@ -563,6 +612,7 @@ impl Ctx {
                     duration_secs: dur as i64,
                 }
             };
+            crate::library::playback_update(info.clone(), ui.get_stalled());
             self.discord.on_playback_update(info);
         }
         if playing
@@ -570,17 +620,17 @@ impl Ctx {
             && self.last_report.get().elapsed() >= Duration::from_secs(1)
         {
             self.last_report.set(Instant::now());
-            let report = {
-                let s = self.state.lock().unwrap();
-                s.current_item_id
-                    .as_ref()
-                    .and_then(|(p_id, id)| s.active_providers.get(p_id).map(|p| (p.clone(), id.clone())))
-            };
+            let report = self.current().and_then(|i| i.provider).map(|p| (p.provider, p.item.id));
             if let Some((provider, item_id)) = report {
                 let t = pos.unwrap_or(0.0) as i64;
-                tokio::spawn(async move {
-                    let _ = provider.report_playback_progress(&item_id, t, paused).await;
-                });
+                if !self.report_busy.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    provider.set_playback_duration(&item_id, dur);
+                    let busy = self.report_busy.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = futures::executor::block_on(provider.report_playback_progress(&item_id, t, paused));
+                        busy.store(false, std::sync::atomic::Ordering::Release);
+                    });
+                }
             }
         }
     }
@@ -597,6 +647,9 @@ fn trim_float(v: f64) -> String {
 /// `resume` is the file to continue; `row` is the start-screen row it came from.
 fn open_torrent(source: String, resume: Option<usize>, row: Option<String>) {
     let c = ctx();
+    if let Some(task) = c.torrent_open.borrow_mut().take() { task.abort(); }
+    let generation = c.torrent_generation.get().wrapping_add(1);
+    c.torrent_generation.set(generation);
     c.with_ui(|ui| {
         ui.set_link_error("".into());
         match &row {
@@ -608,12 +661,15 @@ fn open_torrent(source: String, resume: Option<usize>, row: Option<String>) {
         }
     });
     let torrents = c.torrents.clone();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
+        let _gate = TORRENT_OPS.lock().await;
+        let prefs = crate::settings::get().torrents;
         let result = match TorrentService::download_dir() {
-            Ok(dirs) => torrents.add(&dirs, source.clone(), &SessionPrefs::default()).await,
+            Ok(dirs) => torrents.add(&dirs, source.clone(), &prefs).await,
             Err(e) => Err(e),
         };
         on_ui(move |c| {
+            if c.torrent_generation.get() != generation { return; }
             c.with_ui(|ui| {
                 ui.set_link_busy(false);
                 ui.set_row_opening("".into());
@@ -656,6 +712,7 @@ fn open_torrent(source: String, resume: Option<usize>, row: Option<String>) {
             }
         });
     });
+    *c.torrent_open.borrow_mut() = Some(task);
 }
 
 /// "What to watch": every video of the torrent, with how far each got.
@@ -705,6 +762,7 @@ fn play_torrent_file(info: TorrentInfo, index: usize) {
             id: torrent_id(&info.info_hash, f.index),
             torrent: Some((info.info_hash.clone(), f.index)),
             torrent_path: f.path.clone(),
+            provider: None,
         })
         .collect();
     let same = c
@@ -904,7 +962,7 @@ fn refresh_rows() {
 }
 
 /// Show a torrent's folder in the system file manager.
-fn reveal(path: &str) {
+pub fn reveal(path: &str) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -921,6 +979,15 @@ fn reveal(path: &str) {
         let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new(path));
         let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
+}
+
+pub fn open_folder(path: &str) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(path).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
 fn delete_row(folder: String, watched_only: bool) {
@@ -972,6 +1039,7 @@ pub fn play_music(url: &str, name: &str, queue: bool) {
         id: String::new(),
         torrent: None,
         torrent_path: String::new(),
+        provider: None,
     };
     if queue && !c.queue.borrow().is_empty() {
         c.mpv.command(&["loadfile", url, "append"]);
@@ -989,10 +1057,74 @@ fn local_item(path: &str) -> QueueItem {
         id: path.to_string(),
         torrent: None,
         torrent_path: String::new(),
+        provider: None,
     }
 }
 
 // ---- Wiring -----------------------------------------------------------------
+
+/// A provider result has already been resolved on a worker, so this only
+/// hands the stream to the normal player and keeps its reporting identity.
+pub fn play_provider(provider_id: String, provider: DynProvider, item: MediaItem, url: String, resume: Option<i64>) {
+    let id = if provider_id == "local" {
+        item.id.clone()
+    } else {
+        let config = provider.get_persistable_config();
+        format!("provider:{provider_id}:{}:{}", config.get("base_url").map_or("", String::as_str), item.id)
+    };
+    let name = item.name.clone();
+    ctx().load_queue(vec![QueueItem {
+        url, name, id,
+        torrent: None,
+        torrent_path: String::new(),
+        provider: Some(ProviderItem { provider_id, provider, item, resume }),
+    }], 0);
+}
+
+pub fn stop_provider() {
+    let c = ctx();
+    if c.current().is_some_and(|i| i.provider.is_some()) { c.close_file(); }
+}
+
+/// Stop an old live session immediately when a persisted preference changes.
+/// Session creation remains lazy and uses the latest complete preference set.
+pub fn apply_torrent_preferences() {
+    let c = ctx();
+    c.torrent_generation.set(c.torrent_generation.get().wrapping_add(1));
+    if let Some(task) = c.torrent_open.borrow_mut().take() { task.abort(); }
+    if c.current().is_some_and(|i| i.torrent.is_some()) { c.close_file(); }
+    c.pick_info.borrow_mut().take();
+    c.with_ui(|ui| {
+        ui.set_link_busy(false);
+        ui.set_pick_open(false);
+        ui.set_row_opening("".into());
+    });
+    let service = c.torrents.clone();
+    tokio::spawn(async move {
+        let _gate = TORRENT_OPS.lock().await;
+        let prefs = crate::settings::get().torrents;
+        service.set_seeding(prefs.seeding).await;
+        service.set_port_forward(prefs.port_forward).await;
+        service.set_proxy(prefs.proxy).await;
+        service.set_encryption(prefs.encryption).await;
+        service.set_route(prefs.route).await;
+    });
+}
+
+/// Parts commands arrive on worker threads; keep all player mutations on the
+/// UI thread, using the same queue/save/close paths as the regular controls.
+pub struct PluginController;
+impl crate::api::PlaybackController for PluginController {
+    fn play(&self) { on_ui(|c| c.mpv.set_flag("pause", false)); }
+    fn pause(&self) { on_ui(|c| c.mpv.set_flag("pause", true)); }
+    fn toggle_pause(&self) { on_ui(|c| c.mpv.set_flag("pause", !c.mpv.get_flag("pause"))); }
+    fn next(&self) { on_ui(|c| { c.save_position(); c.mpv.command(&["playlist-next", "weak"]); }); }
+    fn previous(&self) { on_ui(|c| { c.save_position(); c.mpv.command(&["playlist-prev", "weak"]); }); }
+    fn stop(&self) { on_ui(|c| c.close_file()); }
+    fn seek(&self, position_secs: i64) {
+        on_ui(move |c| { c.mpv.command(&["seek", &position_secs.max(0).to_string(), "absolute+exact"]); });
+    }
+}
 
 /// Install every callback on the window and start the timers. The returned
 /// timers must live as long as the event loop.
@@ -1032,6 +1164,11 @@ pub fn install(
         peerless_since: Cell::new(None),
         subs_attached_for: RefCell::new(String::new()),
         prefetched: RefCell::new(HashSet::new()),
+        torrent_open: RefCell::new(None),
+        torrent_generation: Cell::new(0),
+        reported_item: RefCell::new(None),
+        reported_position: Cell::new(0),
+        report_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     CTX.with(|slot| *slot.borrow_mut() = Some(c.clone()));
 
@@ -1334,6 +1471,8 @@ pub fn tick(ui: &AppWindow) {
 /// Before the window closes: remember where playback was.
 pub fn shutdown() {
     ctx().save_position();
+    ctx().report_stopped();
+    crate::library::playback_stopped();
 }
 
 #[derive(serde::Deserialize, Debug)]

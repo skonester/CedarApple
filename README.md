@@ -35,17 +35,41 @@ rather than a polished, general-purpose media library.
 - Resolve the torrent file list, choose a video, and stream it to mpv through a
   loopback HTTP server.
 - Prioritize the file being watched instead of downloading a whole season
-  first. Seeding is disabled in the shipped configuration.
+  first. Seeding is disabled by default.
 - Show torrent progress, peers, speed, and cache-waiting status in the player.
+- Show downloaded piece ranges on the seek bar.
 - Keep torrent metadata and watched-file state so previously opened torrents
   can be reopened from the start screen.
 - Reveal a torrent's files or delete watched files/all files from the torrent
   list.
 
 Torrent data is stored below the platform cache directory in a `torrents`
-subdirectory. The torrent engine includes support for additional preferences
-(seeding, port forwarding, proxy, encryption, and network route), but those
-preferences are not exposed in the current UI.
+subdirectory. Settings → Torrents exposes and saves seeding, UPnP port
+forwarding, a SOCKS5 proxy, peer encryption, and the network route. Changing a
+preference stops the current torrent; reopen it to continue with the new
+preferences. The proxy covers outgoing peer TCP and HTTP trackers; DHT and
+UDP trackers use the selected network route.
+
+### Library and providers
+
+Open **Library** from the start screen, player toolbar, or context menu. Pick
+a source to browse folders, search, view continue-watching items, or play a
+result. Configure sources in **Settings → Library**, then click **Apply**:
+
+- **Local folders:** browse videos in the selected library folder.
+- **Seanime:** enable it and enter your existing server's HTTP/HTTPS address.
+  Manage sign-in in Seanime. Library and episode browsing, playback, resume,
+  and watch-history reporting use the existing Seanime client. Library changes
+  received through its WebSocket refresh the open browser.
+- **Parts plugins:** enable `.pts` scripts and use **Open folder** to find their
+  installation directory. Scripts load at startup while enabled and reload
+  when added or edited; deleted scripts unload. Provider hooks appear under
+  **Parts plugins**. Playback events and player-control functions are connected.
+
+Provider playback currently opens one selected item at a time. A built-in
+Seanime account login, artwork grids, and arbitrary plugin UI layout injection
+are not implemented. Only enable scripts you trust; they can access the network
+and control playback. See [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md).
 
 ### Free Music
 
@@ -136,7 +160,7 @@ system; the important files are:
 
 - `history.json`: remembered torrents, watched torrent files, and resume
   positions.
-- `settings.json`: player and UI settings.
+- `settings.json`: player, UI, torrent, and library/provider settings.
 - `free-music.json`: Free Music settings.
 - `cache/torrents/`: torrent session data and downloaded torrent content.
 - `cache/free-music-covers/`: cached Free Music artwork.
@@ -160,12 +184,9 @@ The workflow also publishes SHA-256 checksums. See
 
 ## Project status and documentation
 
-The current UI is centered on direct file/link playback, torrent playback,
-and Free Music. The following components exist in the source tree but are not
-connected to the shipped UI:
-
-- `src/backend/seanime/`: a Seanime provider/client.
-- `src/extensions/`: the Parts `.pts` scripting VM and hot-reload bridge.
+The current UI includes direct file/link playback, torrent playback, Free
+Music, and an initial provider Library. Seanime requires a running, configured
+server; Parts requires enabled, installed scripts. Both are disabled by default.
 
 See [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md) for the scripting runtime reference,
 [architecture.md](architecture.md) for the module overview, and

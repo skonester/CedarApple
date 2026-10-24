@@ -37,6 +37,8 @@ pub struct Config {
     pub controls: Controls,
     pub network: Network,
     pub performance: Performance,
+    pub torrents: crate::torrent::SessionPrefs,
+    pub library: Library,
 }
 
 impl Default for Config {
@@ -51,6 +53,8 @@ impl Default for Config {
             controls: Controls::default(),
             network: Network::default(),
             performance: Performance::default(),
+            torrents: crate::torrent::SessionPrefs::default(),
+            library: Library::default(),
         }
     }
 }
@@ -303,6 +307,28 @@ impl Default for Performance {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Library {
+    pub folder: String,
+    pub seanime_enabled: bool,
+    pub seanime_url: String,
+    pub parts_enabled: bool,
+}
+
+impl Default for Library {
+    fn default() -> Self {
+        Self {
+            folder: directories::UserDirs::new()
+                .and_then(|d| d.video_dir().map(|p| p.to_string_lossy().into_owned()))
+                .unwrap_or_default(),
+            seanime_enabled: false,
+            seanime_url: "http://localhost:3211".into(),
+            parts_enabled: false,
+        }
+    }
+}
+
 // ---- Storage -----------------------------------------------------------------
 
 fn dirs() -> Option<directories::ProjectDirs> {
@@ -536,7 +562,7 @@ pub fn apply_ui(ui: &AppWindow, c: &Config) {
 
 // ---- The rows ----------------------------------------------------------------
 
-pub const CATEGORIES: [&str; 11] = [
+pub const CATEGORIES: [&str; 13] = [
     "Playback",
     "Video",
     "Audio",
@@ -544,6 +570,8 @@ pub const CATEGORIES: [&str; 11] = [
     "Controls",
     "Interface",
     "Network",
+    "Torrents",
+    "Library",
     "Performance",
     "Privacy",
     "General",
@@ -764,6 +792,35 @@ fn rows(cat: &str, c: &Config, devices: &[(String, String)]) -> Vec<SettingRow> 
                 .toggle("performance.framedrop", "Drop frames when the system can't keep up", "mpv framedrop=vo.", c.performance.framedrop)
                 .choice("performance.video_sync", "Clock synchronisation", "mpv video-sync.", &c.performance.video_sync, &["audio", "display-resample", "display-vdrop", "desync"]);
         }
+        "Torrents" => {
+            let prefs = &c.torrents;
+            let mut routes = vec!["System default".to_string(), "Without VPN".to_string()];
+            routes.extend(crate::net_route::view().interfaces.into_iter().map(|i| format!("Interface: {}", i.name)));
+            let route = match &prefs.route {
+                crate::net_route::Route::Auto => "System default".into(),
+                crate::net_route::Route::Direct => "Without VPN".into(),
+                crate::net_route::Route::Iface { name } => format!("Interface: {name}"),
+            };
+            if !routes.contains(&route) { routes.push(route.clone()); }
+            r.header("Peer connections")
+                .toggle("torrents.seeding", "Upload to peers", "Allow uploading downloaded pieces. Changing a torrent preference stops the current torrent; reopen it to continue.", prefs.seeding)
+                .toggle("torrents.port_forward", "Automatic port forwarding", "Ask the router to forward the torrent port using UPnP. Existing mappings expire after their lease ends.", prefs.port_forward)
+                .choice("torrents.encryption", "Peer encryption", "Prefer encryption falls back to plaintext for peers that do not support it.", match prefs.encryption { crate::torrent::Encryption::Off => "Off", crate::torrent::Encryption::On => "Prefer encryption", crate::torrent::Encryption::Only => "Require encryption" }, &["Off", "Prefer encryption", "Require encryption"])
+                .header("Connection")
+                .text("torrents.proxy", "SOCKS5 proxy", "Outgoing peer TCP and HTTP trackers only. DHT and UDP trackers still use the selected network route.", &prefs.proxy, "socks5://host:port")
+                .choice("torrents.route", "Network route", "Without VPN uses your direct connection and exposes its public address to peers. An unavailable interface fails instead of falling back.", &route, &routes.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+        "Library" => {
+            r.header("Local media")
+                .path("library.folder", "Library folder", "Browse videos from this folder in Library.", &c.library.folder)
+                .header("Seanime")
+                .toggle("library.seanime_enabled", "Enable Seanime", "Browse and play from your configured Seanime server. Sign in and manage your account in Seanime.", c.library.seanime_enabled)
+                .text("library.seanime_url", "Server address", "The URL of your Seanime server.", &c.library.seanime_url, "http://localhost:3211")
+                .header("Parts plugins")
+                .toggle("library.parts_enabled", "Enable .pts plugins", "Run scripts with player controls and network access. Only install scripts you trust. Click Apply below to start or stop plugins.", c.library.parts_enabled)
+                .action("library.parts_folder", "Plugin folder", "Open the folder for .pts scripts. Changes reload automatically while plugins are enabled.", "Open folder")
+                .action("library.apply", "Apply library settings", "Reconnect providers and reload plugins using these settings.", "Apply");
+        }
         "Privacy" => {
             r.header("History")
                 .toggle("playback.resume", "Remember the playback position", "Continue each file from where it was left.", c.playback.resume)
@@ -853,6 +910,27 @@ fn set(c: &mut Config, id: &str, v: &str) -> bool {
         "network.http_proxy" => c.network.http_proxy = v.into(),
         "network.tls_verify" => c.network.tls_verify = on,
         "network.user_agent" => c.network.user_agent = v.into(),
+        "torrents.seeding" => c.torrents.seeding = on,
+        "torrents.port_forward" => c.torrents.port_forward = on,
+        "torrents.proxy" => c.torrents.proxy = v.trim().into(),
+        "torrents.encryption" => c.torrents.encryption = match v {
+            "Off" => crate::torrent::Encryption::Off,
+            "Prefer encryption" => crate::torrent::Encryption::On,
+            "Require encryption" => crate::torrent::Encryption::Only,
+            _ => return false,
+        },
+        "torrents.route" => c.torrents.route = match v {
+            "System default" => crate::net_route::Route::Auto,
+            "Without VPN" => crate::net_route::Route::Direct,
+            _ => match v.strip_prefix("Interface: ") {
+                Some(name) if !name.is_empty() => crate::net_route::Route::Iface { name: name.into() },
+                _ => return false,
+            },
+        },
+        "library.folder" => c.library.folder = v.into(),
+        "library.seanime_url" => c.library.seanime_url = v.trim().into(),
+        "library.seanime_enabled" => c.library.seanime_enabled = on,
+        "library.parts_enabled" => c.library.parts_enabled = on,
         "performance.threads" => c.performance.threads = n!().round() as i64,
         "performance.skip_loop_filter" => c.performance.skip_loop_filter = v.into(),
         "performance.framedrop" => c.performance.framedrop = on,
@@ -960,11 +1038,29 @@ impl Dialog {
         }
         apply_changes(&self.mpv, &old, &c);
         apply_ui(ui, &c);
+        if old.torrents != c.torrents {
+            crate::playback::apply_torrent_preferences();
+            ui.global::<SettingsState>().set_note("Torrent preferences saved. Reopen the torrent to continue.".into());
+        }
+        if old.library != c.library {
+            ui.global::<SettingsState>().set_note("Saved. Click Apply below to reconnect library sources.".into());
+        }
         self.show(ui);
     }
 
     fn action(&mut self, ui: &AppWindow, id: &str) {
         match id {
+            "library.apply" => {
+                match crate::library::configure(ui) {
+                    Ok(()) => ui.global::<SettingsState>().set_note("Library settings applied.".into()),
+                    Err(e) => ui.global::<SettingsState>().set_note(e.into()),
+                }
+            }
+            "library.parts_folder" => {
+                if let Some(path) = crate::extensions::bridge::get_parts_dir() {
+                    crate::playback::open_folder(&path.to_string_lossy());
+                }
+            }
             "video.reset_picture" => {
                 let old = get();
                 let c = update(|c| {
@@ -982,7 +1078,7 @@ impl Dialog {
                 ui.global::<SettingsState>()
                     .set_note("Resume positions cleared.".into());
             }
-            "video.screenshot_dir.choose" | "general.log_file.choose" | "free_music.folder.choose" => {
+            "video.screenshot_dir.choose" | "general.log_file.choose" | "free_music.folder.choose" | "library.folder.choose" => {
                 let id = id.trim_end_matches(".choose").to_string();
                 let file = id == "general.log_file";
                 tokio::spawn(async move {
@@ -1098,5 +1194,29 @@ mod tests {
         assert_eq!(c.audio.volume_max, 150);
         assert_eq!(c.audio.startup_volume, 100);
         assert_eq!(c.controls, Controls::default());
+        assert_eq!(c.torrents, crate::torrent::SessionPrefs::default());
+        assert!(!c.library.seanime_enabled && !c.library.parts_enabled);
+    }
+
+    #[test]
+    fn provider_and_torrent_preferences_survive_restart() {
+        let mut c = Config::default();
+        for (id, value) in [
+            ("torrents.seeding", "true"),
+            ("torrents.port_forward", "true"),
+            ("torrents.encryption", "Require encryption"),
+            ("torrents.proxy", "socks5://localhost:1080"),
+            ("torrents.route", "Interface: Test VPN"),
+            ("library.seanime_enabled", "true"),
+            ("library.parts_enabled", "true"),
+            ("library.seanime_url", "https://media.example.com"),
+            ("library.folder", "D:/Media"),
+        ] { assert!(set(&mut c, id, value), "{id}"); }
+        let reloaded: Config = serde_json::from_slice(&serde_json::to_vec(&c).unwrap()).unwrap();
+        assert_eq!(reloaded, c);
+        assert_eq!(reloaded.torrents.encryption, crate::torrent::Encryption::Only);
+        assert_eq!(reloaded.torrents.route, crate::net_route::Route::Iface { name: "Test VPN".into() });
+        assert!(!set(&mut c, "torrents.encryption", "invalid"));
+        assert!(!set(&mut c, "torrents.route", "Interface: "));
     }
 }

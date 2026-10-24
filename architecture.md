@@ -94,7 +94,16 @@ trait MediaProvider {
 ```
 
 - `local`: resolves a local path directly, no streaming needed.
-- `seanime`: HTTP client that resolves anime streams and fetches metadata (not wired to UI yet).
+- `seanime`: HTTP client and WebSocket support, connected through the Library.
+
+### `src/library.rs` — Provider Browser and Extension Host
+
+- Registers the configured local folder, optional Seanime server, and optional Parts provider.
+- Binds `ui/library.slint` to root/folder browsing, search, continue watching, and playback.
+- Runs provider requests on workers and discards results from superseded views.
+- Starts and stops Seanime's WebSocket listener and the Parts file watcher.
+- Dispatches playback events to scripts. Script player controls return to the UI thread.
+- `src/settings.rs` persists provider configuration and torrent preferences in `settings.json`.
 
 ### `src/navigation.rs` — UI Navigation
 
@@ -102,7 +111,9 @@ Provides helper functions like `format_time` for displaying durations and progre
 
 ### `src/extensions/` — Scripting VM
 
-A small bytecode interpreter for `.pts` plugins. The VM is defined but not connected to any UI component; see `PLUGIN_GUIDE.md` for details.
+A bytecode interpreter and native bridge for `.pts` plugins. When enabled in
+Settings → Library, scripts load at startup, reload on file changes, receive
+playback events, and provide browsable media. See `PLUGIN_GUIDE.md` for details.
 
 ### `src/ui/` — Slint Components
 
@@ -196,5 +207,5 @@ cargo run --release
 ## Extensibility Notes
 
 - **Providers**: Adding a new source just requires implementing `MediaProvider` and registering it in `AppState::new()`.
-- **Plugins**: The Parts VM is isolated in `src/extensions/`; future UI wiring would involve adding signals to `AppEvent` and components to listen for `ScriptReloaded`.
+- **Plugins**: The Parts VM lives in `src/extensions/`; `src/library.rs` owns its lifetime, file watcher, and player integration. Arbitrary layout slots remain an unimplemented host API.
 - **UI themes**: Slint's theming system allows runtime customization of colors, fonts, and layout without recompilation.

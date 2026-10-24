@@ -136,6 +136,7 @@ pub struct SeanimeWsListener {
     running: Arc<AtomicBool>,
     outbound_tx: mpsc::UnboundedSender<String>,
     outbound_rx: Arc<tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>>,
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl SeanimeWsListener {
@@ -145,6 +146,7 @@ impl SeanimeWsListener {
             running: Arc::new(AtomicBool::new(false)),
             outbound_tx: tx,
             outbound_rx: Arc::new(tokio::sync::Mutex::new(Some(rx))),
+            task: std::sync::Mutex::new(None),
         }
     }
 
@@ -164,7 +166,7 @@ impl SeanimeWsListener {
         let running_clone = running.clone();
         let outbound_rx_lock = self.outbound_rx.clone();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut outbound_receiver = {
                 let mut guard = outbound_rx_lock.lock().await;
                 guard.take()
@@ -280,11 +282,13 @@ impl SeanimeWsListener {
             eprintln!("[SeanimeWS] Listener stopped");
         });
 
+        if let Some(old) = self.task.lock().unwrap().replace(task) { old.abort(); }
         running
     }
 
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
+        if let Some(task) = self.task.lock().unwrap().take() { task.abort(); }
     }
 }
 

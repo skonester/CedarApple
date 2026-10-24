@@ -352,7 +352,7 @@ impl SeanimeClient {
     }
 
     pub fn default_local() -> Self {
-        Self::new("http://192.168.1.250:3211")
+        Self::new("http://localhost:3211")
     }
 
     pub fn base_url(&self) -> &str {
@@ -362,7 +362,7 @@ impl SeanimeClient {
     /// GET /api/v1/status
     pub async fn get_status(&self) -> Result<SeanimeStatus, SeanimeError> {
         let url = format!("{}/api/v1/status", self.base_url);
-        let resp = self.http_client.get(&url).send().await?;
+        let resp = self.http_client.get(&url).send().await?.error_for_status()?;
         let res: SeanimeResponse<SeanimeStatus> = resp.json().await?;
         if let Some(err) = res.error {
             return Err(SeanimeError::Api(err));
@@ -373,7 +373,7 @@ impl SeanimeClient {
     /// GET /api/v1/library/collection
     pub async fn get_library_collection(&self) -> Result<SeanimeCollection, SeanimeError> {
         let url = format!("{}/api/v1/library/collection", self.base_url);
-        let resp = self.http_client.get(&url).send().await?;
+        let resp = self.http_client.get(&url).send().await?.error_for_status()?;
         let res: SeanimeResponse<SeanimeCollection> = resp.json().await?;
         if let Some(err) = res.error {
             return Err(SeanimeError::Api(err));
@@ -384,7 +384,7 @@ impl SeanimeClient {
     /// GET /api/v1/library/anime-entry/{id}
     pub async fn get_anime_entry(&self, media_id: i32) -> Result<SeanimeAnimeEntry, SeanimeError> {
         let url = format!("{}/api/v1/library/anime-entry/{}", self.base_url, media_id);
-        let resp = self.http_client.get(&url).send().await?;
+        let resp = self.http_client.get(&url).send().await?.error_for_status()?;
         let res: SeanimeResponse<SeanimeAnimeEntry> = resp.json().await?;
         if let Some(err) = res.error {
             return Err(SeanimeError::Api(err));
@@ -401,7 +401,7 @@ impl SeanimeClient {
             "{}/api/v1/anime/episode-collection/{}",
             self.base_url, media_id
         );
-        let resp = self.http_client.get(&url).send().await?;
+        let resp = self.http_client.get(&url).send().await?.error_for_status()?;
         let res: SeanimeResponse<SeanimeEpisodeCollection> = resp.json().await?;
         if let Some(err) = res.error {
             return Err(SeanimeError::Api(err));
@@ -427,7 +427,7 @@ impl SeanimeClient {
             total_episodes,
             mal_id,
         };
-        let resp = self.http_client.post(&url).json(&payload).send().await?;
+        let resp = self.http_client.post(&url).json(&payload).send().await?.error_for_status()?;
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(SeanimeError::Api(format!(
@@ -444,7 +444,7 @@ impl SeanimeClient {
             "{}/api/v1/playback-manager/sync-current-progress",
             self.base_url
         );
-        let resp = self.http_client.post(&url).send().await?;
+        let resp = self.http_client.post(&url).send().await?.error_for_status()?;
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(SeanimeError::Api(format!("Sync progress failed: {}", body)));
@@ -455,7 +455,7 @@ impl SeanimeClient {
     /// POST /api/v1/library/scan
     pub async fn scan_library(&self) -> Result<(), SeanimeError> {
         let url = format!("{}/api/v1/library/scan", self.base_url);
-        let resp = self.http_client.post(&url).send().await?;
+        let resp = self.http_client.post(&url).send().await?.error_for_status()?;
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(SeanimeError::Api(format!("Library scan failed: {}", body)));
@@ -472,7 +472,7 @@ impl SeanimeClient {
             audio_stream_index: 0,
             stream_type: "direct".to_string(),
         };
-        let resp = self.http_client.post(&url).json(&payload).send().await?;
+        let resp = self.http_client.post(&url).json(&payload).send().await?.error_for_status()?;
         let res: SeanimeResponse<MediastreamContainer> = resp.json().await?;
         if let Some(err) = res.error {
             return Err(SeanimeError::Api(err));
@@ -507,7 +507,7 @@ impl SeanimeClient {
                 kind: "mediastream".to_string(),
             },
         };
-        let resp = self.http_client.patch(&url).json(&payload).send().await?;
+        let resp = self.http_client.patch(&url).json(&payload).send().await?.error_for_status()?;
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(SeanimeError::Api(format!(
@@ -524,7 +524,7 @@ impl SeanimeClient {
         media_id: i32,
     ) -> Result<Option<WatchHistoryItem>, SeanimeError> {
         let url = format!("{}/api/v1/continuity/item/{}", self.base_url, media_id);
-        let resp = self.http_client.get(&url).send().await?;
+        let resp = self.http_client.get(&url).send().await?.error_for_status()?;
         let res: SeanimeResponse<WatchHistoryItemResponse> = resp.json().await?;
         if let Some(data) = res.data
             && data.found
