@@ -26,6 +26,22 @@ fn config_dir() -> Option<PathBuf> {
         .find(|p| p.is_dir())
 }
 
+/// Creates spincard's cache dirs (`<home>/.cache/spincard/img`) before mpv
+/// loads the script. spincard makes them at script load, and the libmpv we
+/// ship has no Lua `utils.mkdir`, so its fallback shells out to `mkdir`. From a
+/// GUI-subsystem exe on Windows, that pops a console window on every launch.
+/// With the dirs already present, the script finds them and spawns nothing.
+/// `home` is resolved exactly as spincard's `util.home()` does it.
+fn ensure_spincard_cache_dirs() {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+        return;
+    };
+    let img = PathBuf::from(home).join(".cache").join("spincard").join("img");
+    if let Err(e) = std::fs::create_dir_all(&img) {
+        eprintln!("[CedarApple] cannot create {}: {e}", img.display());
+    }
+}
+
 #[derive(Clone)]
 pub struct MpvHandle(*mut mpv_handle);
 
@@ -114,6 +130,7 @@ impl MpvHandle {
             // dir explicitly also means the user's own ~/mpv config is never
             // picked up - what ships is what runs.
             if let Some(dir) = config_dir() {
+                ensure_spincard_cache_dirs();
                 let dir_str = dir.to_string_lossy().into_owned();
                 for (opt, val) in [("config", "yes"), ("config-dir", dir_str.as_str())] {
                     let c_opt = CString::new(opt).unwrap();

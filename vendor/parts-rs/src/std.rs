@@ -282,6 +282,15 @@ pub fn __exec(args: &[Value]) -> Result<Value, String> {
 
     let mut cmd = Command::new(raw_cmd.as_str());
 
+    // CedarApple: the host is a GUI-subsystem exe, so a console child would
+    // otherwise get a fresh console window. Output is captured, so none is
+    // needed. 0x0800_0000 is CREATE_NO_WINDOW.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+
     for arg in args.iter().skip(1) {
         let raw_arg = match arg {
             Value::String(s) => s,

@@ -510,11 +510,17 @@ function M.tmpdir()
 end
 
 -- CedarApple change from upstream spincard: this used to os.execute() a
--- `mkdir`. It runs at script load (cache.lua, images.lua), so every launch
--- spawned a shell — and on Windows, from a GUI-subsystem host like CedarApple,
--- that flashes a console window. mpv >= 0.38 exposes utils.mkdir, which makes
--- the directory in-process; the shell is kept only as a fallback for older
--- builds that genuinely have no mkdir at all.
+-- `mkdir` on every call. It runs at script load (cache.lua, images.lua), so
+-- every launch spawned a shell, and on Windows a shell started from a
+-- GUI-subsystem host like CedarApple flashes a console window.
+--
+-- Now: an existing directory is left alone (CedarApple creates spincard's
+-- cache dirs before mpv starts, so this is the normal case and spawns
+-- nothing). A missing one is made in-process with utils.mkdir where mpv has
+-- it. The libmpv CedarApple bundles does NOT have it, so otherwise mkdir runs
+-- through mpv's own subprocess command, which starts children without a
+-- console window. os.execute is never used, because it always goes through
+-- cmd.exe.
 --
 -- utils.mkdir creates ONE level, so walk the path and make each missing parent
 -- in turn. It returns false for a directory that already exists, which is the
@@ -522,12 +528,17 @@ end
 function M.mkdir_p(dir)
     if not dir or dir == "" then return end
 
-    if not utils.mkdir then -- pre-0.38 mpv
-        if WIN then
-            os.execute('mkdir "' .. dir:gsub("/", "\\") .. '" 2>nul')
-        else
-            os.execute("mkdir -p '" .. dir .. "' 2>/dev/null")
-        end
+    local info = utils.file_info(dir)
+    if info and info.is_dir then return end
+
+    if not utils.mkdir then
+        local args = WIN
+            and { "cmd", "/d", "/c", "mkdir", (dir:gsub("/", "\\")) }
+            or { "mkdir", "-p", dir }
+        mp.command_native({
+            name = "subprocess", playback_only = false,
+            capture_stdout = true, capture_stderr = true, args = args,
+        })
         return
     end
 
