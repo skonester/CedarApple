@@ -11,6 +11,7 @@ mod extensions;
 mod free_music;
 mod image_cache;
 mod library;
+mod lumtub;
 mod history;
 mod navigation;
 mod net_route;
@@ -275,6 +276,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     settings::install(&ui, mpv.clone());
     let timers = playback::install(&ui, mpv.clone(), state.clone(), discord.clone());
     library::install(&ui, state.clone());
+    lumtub::install(&ui);
     // The Free Music browser (src/free_music), which plays through playback.
     let music_timer = free_music::install(&ui);
 
@@ -351,6 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[CedarApple] Event loop exited.");
     playback::shutdown();
     library::shutdown();
+    lumtub::shutdown();
     drop(timers);
     drop(music_timer);
 

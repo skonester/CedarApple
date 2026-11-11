@@ -53,6 +53,8 @@ const RESUME_MIN_S: f64 = 5.0;
 struct QueueItem {
     url: String,
     name: String,
+    /// A per-file header for resolved YouTube streams. Other media keep mpv's default.
+    user_agent: Option<String>,
     /// What the position is remembered under: the path, or `torrent:<hash>/<i>`.
     /// Empty for a Free Music song, which starts from the top every time.
     id: String,
@@ -217,10 +219,10 @@ impl Ctx {
         }
 
         let mpv = &self.mpv;
-        mpv.command(&["loadfile", &items[start].url, "replace"]);
+        load_item(mpv, &items[start], "replace");
         for (i, it) in items.iter().enumerate() {
             if i != start {
-                mpv.command(&["loadfile", &it.url, "append"]);
+                load_item(mpv, it, "append");
             }
         }
         // The appended list starts with the ones that belong BEFORE `start`;
@@ -390,6 +392,9 @@ impl Ctx {
         });
 
         let Some(item) = self.current() else { return };
+        if let Some(id) = item.id.strip_prefix("youtube:") {
+            crate::lumtub::playback_started(id);
+        }
         self.report_stopped();
         *self.reported_item.borrow_mut() = Some(item.clone());
         self.reported_position.set(0);
@@ -437,6 +442,11 @@ impl Ctx {
     /// A file failed to open. Said out loud: a black window that never starts
     /// is the failure nobody can diagnose.
     fn on_file_failed(&self) {
+        if let Some(item) = self.current()
+            && let Some(id) = item.id.strip_prefix("youtube:")
+        {
+            crate::lumtub::playback_failed(id);
+        }
         let torrent = self.current().is_some_and(|i| i.torrent.is_some());
         self.with_ui(|ui| ui.set_is_loading(false));
         self.osd(
@@ -759,6 +769,7 @@ fn play_torrent_file(info: TorrentInfo, index: usize) {
         .map(|f| QueueItem {
             url: f.url.clone(),
             name: display_name(&f.path),
+            user_agent: None,
             id: torrent_id(&info.info_hash, f.index),
             torrent: Some((info.info_hash.clone(), f.index)),
             torrent_path: f.path.clone(),
@@ -1036,6 +1047,7 @@ pub fn play_music(url: &str, name: &str, queue: bool) {
     let item = QueueItem {
         url: url.to_string(),
         name: name.to_string(),
+        user_agent: None,
         id: String::new(),
         torrent: None,
         torrent_path: String::new(),
@@ -1050,10 +1062,29 @@ pub fn play_music(url: &str, name: &str, queue: bool) {
     }
 }
 
+/// Use per-file options so a YouTube User-Agent cannot leak to another source.
+fn load_item(mpv: &MpvHandle, item: &QueueItem, mode: &str) {
+    if let Some(agent) = &item.user_agent {
+        let escaped = agent.replace('\\', "\\\\").replace('"', "\\\"").replace(['\r', '\n'], "");
+        mpv.command(&["loadfile", &item.url, mode, "-1", &format!("user-agent=\"{escaped}\"")]);
+    } else {
+        mpv.command(&["loadfile", &item.url, mode]);
+    }
+}
+
+pub fn play_lumtub(url: &str, id: &str, title: &str, user_agent: &str) {
+    ctx().load_queue(vec![QueueItem {
+        url: url.into(), name: title.into(), id: format!("youtube:{id}"),
+        user_agent: Some(user_agent.into()), torrent: None,
+        torrent_path: String::new(), provider: None,
+    }], 0);
+}
+
 fn local_item(path: &str) -> QueueItem {
     QueueItem {
         url: path.to_string(),
         name: display_name(path),
+        user_agent: None,
         id: path.to_string(),
         torrent: None,
         torrent_path: String::new(),
@@ -1074,7 +1105,7 @@ pub fn play_provider(provider_id: String, provider: DynProvider, item: MediaItem
     };
     let name = item.name.clone();
     ctx().load_queue(vec![QueueItem {
-        url, name, id,
+        url, name, id, user_agent: None,
         torrent: None,
         torrent_path: String::new(),
         provider: Some(ProviderItem { provider_id, provider, item, resume }),

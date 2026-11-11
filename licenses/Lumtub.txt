@@ -1,0 +1,23 @@
+Lumtub: https://github.com/0x696c757a696f/lumtub
+Copyright (c) Lumtub contributors.
+Licensed under the GNU General Public License, version 3 or later.
+See ../LICENSE for the complete license text.
+
+Ported from the supplied Lumtub 0.2.36 source:
+
+- src/lumtub/listing.rs: native/lumtub_core/src/listing.rs, including its tests.
+  The Dart FFI wrapper was removed and imports were adapted.
+- src/lumtub/innertube.rs: the at, seconds and members_only helpers from
+  native/lumtub_core/src/innertube.rs, with checked duration arithmetic.
+- src/lumtub/catalog.rs: requests, client headers and filter parameters from
+  lib/youtube_listing.dart, lib/youtube_web.dart and lib/video_repository.dart.
+- src/lumtub/tools.rs: the EDL stream construction from
+  native/lumtub_core/src/resolved.rs; the tool preparation and stream resolver
+  follow lib/tool_manager.dart and lib/stream_resolver.dart.
+
+CedarApple's controller, local storage and Slint interface are adaptations
+for the native host. Flutter, PiliNara UI, fonts and skins are not included.
+
+yt-dlp and Deno are optional runtime tools downloaded from their upstream
+GitHub releases on first playback, or discovered beside CedarApple or on PATH.
+They are not distributed in CedarApple's source or release archives.

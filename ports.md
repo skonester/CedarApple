@@ -46,6 +46,33 @@ dialog of CedarApple's own, reqwest and a JSON file).
 | `src/settings.rs`, `ui/settings.slint`, `ui/widgets.slint` | `src/config.rs`, `src/settings/{apply,rows,schema}.rs`, `ui/settings.slint` | The categories CedarApple can act on; same options, mpv mappings and wording |
 | `.github/workflows/release.yml`, `packaging/` | `release.yml`, `packaging/appimage`, `packaging/flatpak` | Adapted; Windows keeps the bundled `mpv-dev/libmpv-2.dll` |
 
+## Ported from Lumtub
+
+[Lumtub](https://github.com/0x696c757a696f/lumtub) 0.2.36
+(GPL-3.0-or-later) is integrated as a native YouTube browser, opened with the
+**Lumtub** button immediately to the right of **Library** on the start screen
+and player toolbar. Flutter is replaced with Slint; playback uses CedarApple's
+existing libmpv player.
+
+| CedarApple | From Lumtub | How |
+| --- | --- | --- |
+| `src/lumtub/listing.rs` | `native/lumtub_core/src/listing.rs` | Copied with tests; FFI wrapper removed |
+| `src/lumtub/innertube.rs` | `native/lumtub_core/src/innertube.rs` | Listing helpers copied |
+| `src/lumtub/catalog.rs` | `lib/youtube_listing.dart`, `youtube_web.dart`, `video_repository.dart` | Search filters, channel tabs, playlists and continuations translated |
+| `src/lumtub/tools.rs` | `lib/tool_manager.dart`, `stream_resolver.dart`, native `resolved.rs` | Tool discovery/preparation and stream resolution adapted; EDL construction copied |
+| `src/lumtub/mod.rs`, `store.rs`, `ui/lumtub.slint` | Browsing and library controllers | Native host with thumbnails, watch later, followed channels and local history |
+
+yt-dlp and Deno are discovered beside the executable, in CedarApple's tool
+cache or on PATH. Missing tools are downloaded on first playback from their
+upstream GitHub releases and checked against GitHub's SHA-256 digest.
+Separate audio and video streams are joined with mpv's EDL support, without
+downloading the video to disk. Resume positions use stable `youtube:<id>` keys.
+Closing the browser or pressing Cancel aborts pending requests and resolution.
+
+This port covers signed-out browsing and playback. Google sign-in, Lumtub's
+recommendation model, downloads, casting, chat, translation and skins are not
+ported. See `licenses/Lumtub.txt` for source attribution.
+
 ## Next, in order
 
 1. **Recent files on the start screen.** Positions are already saved per file

@@ -103,6 +103,26 @@ information, and come with a `.licence.txt` attribution file. Internet Archive
 needs no setup. Jamendo needs a free client ID, set in Settings → Free Music or
 with the `JAMENDO_CLIENT_ID` environment variable.
 
+### Lumtub / YouTube
+
+Click **Lumtub**, immediately to the right of **Library** on the start screen
+or player toolbar, to browse YouTube inside CedarApple. Search videos, Shorts,
+live streams, channels and playlists, browse channel tabs, and load more
+results. Click a video to play it in CedarApple with its normal playback
+controls and resume support. You can also paste a YouTube video or playlist
+link into the search box.
+
+Watch later, followed channels and watch history stay on this computer in
+`lumtub.json`. No Google account or API key is needed. Account-only videos and
+Lumtub's advanced features such as chat, translation and casting are not part
+of this native port.
+
+On first playback CedarApple prepares **yt-dlp** and **Deno**, downloading
+missing tools from their official GitHub releases with SHA-256 verification.
+You can instead place them beside the CedarApple executable or install them
+on PATH. The browser remains responsive during setup, and **Cancel** stops
+the pending operation. Search terms and playback requests are sent to YouTube.
+
 ## Install
 
 Builds are on the
@@ -205,6 +225,8 @@ cache directories:
 | `settings.json` | Player, UI, torrent, and library settings |
 | `history.json` | Remembered torrents, watched files, and resume positions |
 | `free-music.json` | Free Music settings |
+| `lumtub.json` | YouTube watch later, followed channels and local history |
+| `cache/lumtub-tools/` | yt-dlp and Deno prepared for YouTube playback |
 | `cache/torrents/` | Torrent session data and downloaded content |
 | `cache/free-music-covers/` | Cached Free Music artwork |
 
@@ -237,6 +259,10 @@ Copyright (c) Evgenii Zakharov. The Free Music browser, rendering changes, and
 Linux packaging were ported from
 [Vivi](https://github.com/Loafer19/vivi), MIT, Copyright (c) 2026 Ruslan
 Popelyshyn.
+
+YouTube browsing and stream resolution are adapted from
+[Lumtub](https://github.com/0x696c757a696f/lumtub), GPL-3.0-or-later.
+See [licenses/Lumtub.txt](licenses/Lumtub.txt) and [ports.md](ports.md).
 
 Vendored `librqbit` crates are Apache-2.0. Additional inherited MIT notices and
 the Apache-2.0 text are kept in [licenses/](licenses/); changes to the vendored

@@ -133,6 +133,7 @@ export component StartScreen inherits Rectangle {
     // The Free Music browser (ui/music.slint).
     callback open-music();
     callback open-library();
+    callback open-lumtub();
     // The Settings dialog (ui/settings.slint).
     callback open-settings();
     callback open-torrent(string);
@@ -235,10 +236,16 @@ export component StartScreen inherits Rectangle {
         HorizontalLayout {
             alignment: center;
             padding-top: 12px;
+            spacing: 12px;
             OutlineButton {
                 text: "Library";
                 icon: Ic.folder;
                 clicked => { root.open-library(); }
+            }
+            OutlineButton {
+                text: "Lumtub";
+                icon: Ic.play;
+                clicked => { root.open-lumtub(); }
             }
         }
 

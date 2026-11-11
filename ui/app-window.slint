@@ -15,12 +15,14 @@ import { LinkDialog, PickDialog } from "./dialogs.slint";
 import { MusicDialog, MusicCard, FreeMusicState } from "./music.slint";
 import { SettingsDialog, SettingsState } from "./settings.slint";
 import { LibraryDialog, LibraryState } from "./library.slint";
+import { LumtubDialog, LumtubState } from "./lumtub.slint";
 import { Spinner } from "std-widgets.slint";
 
 export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter, SettingRow } from "./types.slint";
 export { FreeMusicState } from "./music.slint";
 export { SettingsState } from "./settings.slint";
 export { LibraryState, LibraryRow } from "./library.slint";
+export { LumtubState, LumtubRow } from "./lumtub.slint";
 
 // A text button in the top bar, for CedarApple's own mpv-side tools.
 component BarTextButton inherits Rectangle {
@@ -200,12 +202,16 @@ export component AppWindow inherits Window {
     }
     property <bool> settings-open: SettingsState.open;
     property <bool> library-open: LibraryState.open;
+    property <bool> lumtub-open: LumtubState.open;
+    changed lumtub-open => {
+        if (!root.lumtub-open) { key-handler.focus(); }
+    }
     changed library-open => {
         if (!root.library-open) { key-handler.focus(); }
     }
     changed settings-open => {
         // Back to the keys, unless Settings was opened from Free Music.
-        if (!root.settings-open && !FreeMusicState.open && !LibraryState.open) {
+        if (!root.settings-open && !FreeMusicState.open && !LibraryState.open && !LumtubState.open) {
             key-handler.focus();
         }
     }
@@ -361,6 +367,7 @@ export component AppWindow inherits Window {
         open-link => { root.open-link(); }
         open-music => { FreeMusicState.opened(); }
         open-library => { LibraryState.opened(); }
+        open-lumtub => { LumtubState.opened(); }
         open-settings => { SettingsState.opened(""); }
         open-torrent(folder) => { root.open_torrent_row(folder); }
         reveal-torrent(folder) => { root.reveal_torrent_row(folder); }
@@ -433,6 +440,11 @@ export component AppWindow inherits Window {
                     text: "Library";
                     tip: "Browse media sources";
                     clicked => { LibraryState.opened(); }
+                }
+                BarTextButton {
+                    text: "Lumtub";
+                    tip: "Browse YouTube";
+                    clicked => { LumtubState.opened(); }
                 }
                 BarTextButton {
                     text: "i";
@@ -905,6 +917,10 @@ export component AppWindow inherits Window {
 
     if LibraryState.open : LibraryDialog {
         init => { self.focus-keys(); }
+    }
+
+    if LumtubState.open : LumtubDialog {
+        init => { self.focus-input(); }
     }
 
     if SettingsState.open : SettingsDialog {
