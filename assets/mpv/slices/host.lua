@@ -6,8 +6,11 @@ local stopped = false
 
 local function emit(event, data)
     if stopped then return end
+    -- Older mpv returns JSON, nil on success. Capture only the JSON so Lua
+    -- does not expand the trailing nil into an extra commandv argument.
+    local payload = utils.format_json(data or {})
     mp.commandv("script-message", "cedarapple-slice", config.session,
-        event, utils.format_json(data or {}))
+        event, payload)
 end
 
 cedarapple_slice = {

@@ -120,7 +120,24 @@ fn lua_slice_search_paging_queue_errors_cancellation_and_shutdown() {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mpv/slices/youtube-search/slice.json"),
     )
     .unwrap();
-    let stub = r#"
+    let stub = r##"
+-- mpv 0.37 returns JSON, nil even on success, and commandv
+-- rejects the extra nil argument. Reproduce both behaviors on newer mpv too.
+local native_format_json = utils.format_json
+utils.format_json = function(...)
+    local encoded, err = native_format_json(...)
+    return encoded, err
+end
+local native_commandv = mp.commandv
+mp.commandv = function(...)
+    if select(1, ...) == "script-message" and select(2, ...) == "cedarapple-slice" then
+        assert(select("#", ...) == 5, "Slice messages must contain exactly five string arguments")
+        for index = 1, 5 do
+            assert(type(select(index, ...)) == "string", "Slice message argument is not a string")
+        end
+    end
+    return native_commandv(...)
+end
 local pending, next_id = {}, 0
 mp.command_native_async = function(request, callback)
     next_id = next_id + 1
@@ -143,7 +160,7 @@ end
 mp.abort_async_command = function(id)
     if pending[id] then pending[id]:kill(); pending[id] = nil end
 end
-"#;
+"##;
     let loader = manifest::loader(&slice, "test").replace(
         "local ok, err = pcall(dofile, config.entry)",
         &format!("{stub}\nlocal ok, err = pcall(dofile, config.entry)"),
