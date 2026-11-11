@@ -14,6 +14,13 @@ Ported from the supplied Lumtub 0.2.36 source:
 - src/lumtub/tools.rs: the EDL stream construction from
   native/lumtub_core/src/resolved.rs; the tool preparation and stream resolver
   follow lib/tool_manager.dart and lib/stream_resolver.dart.
+  The resolver tries Lumtub's visionOS quick-start client through yt-dlp,
+  checks that its media URLs work, then falls back to yt-dlp's default clients.
+- src/lumtub/relay.rs and backup.rs: the VOD chunked relay and CDN fallback
+  from native/lumtub_core/src/relay.rs and backup.rs, including their tests.
+  Dart FFI and live-fragment handling were removed; HTTP uses CedarApple's
+  certificate verification and proxy preferences. tools.rs registers streams
+  before constructing the EDL, following lib/app/playback_open.dart.
 
 CedarApple's controller, local storage and Slint interface are adaptations
 for the native host. Flutter, PiliNara UI, fonts and skins are not included.

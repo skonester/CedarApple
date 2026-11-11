@@ -1,8 +1,10 @@
 //! Native Lumtub browser. Its Rust listing parser is copied; the Flutter
 //! controller is adapted to Slint and playback goes through CedarApple's mpv.
+mod backup;
 mod catalog;
 mod innertube;
 mod listing;
+mod relay;
 mod store;
 pub(crate) mod tools;
 
@@ -599,6 +601,7 @@ pub fn playback_started(id: &str) {
 }
 
 pub fn playback_failed(id: &str) {
+    relay::report_errors();
     with(|b, ui| {
         let item = b.playing.borrow().clone().filter(|i| i.id == id);
         if let Some(item) = item {

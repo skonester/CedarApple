@@ -1078,7 +1078,14 @@ pub fn play_music(url: &str, name: &str, queue: bool) {
 fn load_item(mpv: &MpvHandle, item: &QueueItem, mode: &str) {
     if let Some(agent) = &item.user_agent {
         let escaped = agent.replace('\\', "\\\\").replace('"', "\\\"").replace(['\r', '\n'], "");
-        mpv.command(&["loadfile", &item.url, mode, "-1", &format!("user-agent=\"{escaped}\"")]);
+        let mut options = format!("user-agent=\"{escaped}\"");
+        // The relay fetches through the configured proxy itself. Its local
+        // addresses must reach this machine directly, including inside EDLs.
+        let local = item.url.matches("http://127.0.0.1:").count();
+        if local > 0 && item.url.matches("http://").count() == local && !item.url.contains("https://") {
+            options.push_str(",http-proxy=\"\"");
+        }
+        mpv.command(&["loadfile", &item.url, mode, "-1", &options]);
     } else {
         mpv.command(&["loadfile", &item.url, mode]);
     }
@@ -1572,5 +1579,77 @@ enum TrackType {
     Sub,
     #[serde(other)]
     Other,
+}
+
+#[cfg(test)]
+mod youtube_tests {
+    use super::*;
+
+    // Uses the app's resolver, relay, mpv initialization, saved preferences
+    // and load_item command. Only the screen/audio device are replaced.
+    #[tokio::test]
+    #[ignore = "contacts YouTube and decodes real video; run explicitly"]
+    async fn live_youtube_playback_and_seek() {
+        let ids = std::env::var("CEDAR_YOUTUBE_TEST_IDS")
+            .unwrap_or_else(|_| "YaXnmR68Zpc".into());
+        for id in ids.split(',') {
+            let video = crate::lumtub::tools::resolve(id).await.unwrap();
+            assert!(video.url.contains("http://127.0.0.1:"), "VOD must use Lumtub's relay");
+            let mpv = MpvHandle::new();
+            struct Close(MpvHandle);
+            impl Drop for Close {
+                fn drop(&mut self) { self.0.stop(); }
+            }
+            let _close = Close(mpv.clone());
+            crate::settings::apply_mpv(&mpv, &crate::settings::get());
+            mpv.set_property_string("vo", "null");
+            mpv.set_property_string("ao", "null");
+            mpv.set_property_string("terminal", "no");
+            let mut item = local_item("");
+            item.url = video.url;
+            item.user_agent = Some(video.user_agent);
+            load_item(&mpv, &item, "replace");
+            mpv.set_property_string("pause", "no");
+            let deadline = Instant::now() + Duration::from_secs(45);
+            let mut loaded = false;
+            let mut errors = Vec::new();
+            while Instant::now() < deadline {
+                let event = unsafe { &*mpv_wait_event(mpv.get(), 0.05) };
+                if event.event_id == mpv_event_id_MPV_EVENT_LOG_MESSAGE && !event.data.is_null() {
+                    let message = unsafe { &*(event.data as *const mpv_event_log_message) };
+                    let message = unsafe { std::ffi::CStr::from_ptr(message.text) }.to_string_lossy();
+                    errors.push(message.split_whitespace().map(|w|
+                        if w.contains("://") { "[stream]" } else { w }
+                    ).collect::<Vec<_>>().join(" "));
+                }
+                if event.event_id == mpv_event_id_MPV_EVENT_FILE_LOADED {
+                    loaded = true;
+                    break;
+                }
+                if event.event_id == mpv_event_id_MPV_EVENT_END_FILE { break; }
+            }
+            assert!(loaded, "{id} did not open through the app's playback path: {errors:?}");
+            assert!(mpv.get_double("duration").unwrap_or(0.0) > 60.0);
+            let tracks: serde_json::Value = serde_json::from_str(
+                &mpv.get_property_string("track-list").unwrap()
+            ).unwrap();
+            for kind in ["video", "audio"] {
+                assert!(tracks.as_array().unwrap().iter().any(|t|
+                    t["type"] == kind && t["selected"] == true), "{id}: missing {kind}");
+            }
+            assert!(mpv.command(&["seek", "45", "absolute+exact"]));
+            let deadline = Instant::now() + Duration::from_secs(25);
+            let mut advanced = false;
+            while Instant::now() < deadline {
+                unsafe { mpv_wait_event(mpv.get(), 0.05); }
+                if mpv.get_double("time-pos").unwrap_or(0.0) > 47.0 {
+                    advanced = true;
+                    break;
+                }
+            }
+            assert!(advanced, "{id}: playback did not advance after seeking");
+            println!("Played and sought: {id} — {}", video.title);
+        }
+    }
 }
 

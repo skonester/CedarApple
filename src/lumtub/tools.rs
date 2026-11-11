@@ -176,6 +176,21 @@ pub async fn resolve(id: &str) -> Result<Resolved, String> {
         return Err("Invalid YouTube video ID".into());
     }
     let (yt, deno) = ready().await?;
+    // Lumtub's StreamResolver.quick starts with the visionOS client, whose
+    // VOD URLs need neither a JavaScript signature nor a PO token. Ask the
+    // same client through yt-dlp, retaining its full extractor as fallback.
+    match resolve_using(&yt, &deno, id, Some("visionos")).await {
+        Ok(video) => Ok(video),
+        Err(_) => resolve_using(&yt, &deno, id, None).await,
+    }
+}
+
+async fn resolve_using(
+    yt: &Path,
+    deno: &Path,
+    id: &str,
+    client: Option<&str>,
+) -> Result<Resolved, String> {
     let mut cmd = Command::new(yt);
     cmd.kill_on_drop(true).args([
         "--ignore-config",
@@ -193,9 +208,16 @@ pub async fn resolve(id: &str) -> Result<Resolved, String> {
         &format!("deno:{}", deno.display()),
         "--format",
         "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-        "--",
-        &format!("https://www.youtube.com/watch?v={id}"),
     ]);
+    // Resolve and fetch through the same route; signed URLs are IP-bound.
+    cmd.args(["--proxy", crate::settings::get().network.http_proxy.trim()]);
+    if let Some(client) = client {
+        cmd.args([
+            "--extractor-args",
+            &format!("youtube:player_client={client}"),
+        ]);
+    }
+    cmd.args(["--", &format!("https://www.youtube.com/watch?v={id}")]);
     #[cfg(windows)]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
@@ -216,9 +238,56 @@ pub async fn resolve(id: &str) -> Result<Resolved, String> {
         };
         return Err(hint.into());
     }
-    let info: Value = serde_json::from_slice(&output.stdout)
+    let mut info: Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("Could not read the video information: {e}"))?;
-    from_info(&info)
+    // Lumtub's playback_open.dart / ResolvedVideo.directAddress registers
+    // each VOD stream with NativeRelay before building the EDL. Keep this
+    // shared by the native browser and the Lua YouTube Search Slice.
+    tokio::task::spawn_blocking(move || {
+        relay_streams(&mut info)?;
+        from_info(&info)
+    })
+    .await
+    .map_err(|_| "Could not prepare video playback".to_string())?
+}
+
+fn relay_streams(info: &mut Value) -> Result<(), String> {
+    if info["is_live"] == true || info["live_status"] == "is_live" {
+        return Ok(());
+    }
+    let agent = from_info(info)?.user_agent;
+    let proxy = crate::settings::get().network.http_proxy.trim().to_owned();
+    let proxy = (!proxy.is_empty()).then_some(proxy);
+    let tracks = match info.get_mut("requested_formats") {
+        Some(Value::Array(list)) if !list.is_empty() => list.iter_mut().collect::<Vec<_>>(),
+        _ => vec![],
+    };
+    if tracks.is_empty() {
+        relay_track(info, &agent, proxy)?;
+    } else {
+        for track in tracks {
+            relay_track(track, &agent, proxy.clone())?;
+        }
+    }
+    Ok(())
+}
+
+fn relay_track(track: &mut Value, agent: &str, proxy: Option<String>) -> Result<(), String> {
+    // Manifest/fragment URLs stay with mpv; the relay serves complete files.
+    if track.get("fragments").is_some_and(|v| !v.is_null())
+        || track["protocol"]
+            .as_str()
+            .is_some_and(|p| !matches!(p, "http" | "https"))
+    {
+        return Ok(());
+    }
+    let url = track["url"]
+        .as_str()
+        .ok_or("Missing video stream address")?;
+    super::relay::check(url, agent, proxy.clone())?;
+    let local = super::relay::register(url, track["filesize"].as_u64(), agent, proxy)?;
+    track["url"] = local.into();
+    Ok(())
 }
 
 pub fn from_info(info: &Value) -> Result<Resolved, String> {

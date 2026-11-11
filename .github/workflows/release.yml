@@ -79,7 +79,7 @@ jobs:
       - name: System deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libfontconfig1-dev libfuse2t64 desktop-file-utils \
+          sudo apt-get install -y libxkbcommon-dev libfontconfig1-dev libfuse2t64 desktop-file-utils appstream \
             nasm meson ninja-build pkg-config libass-dev libplacebo-dev libpulse-dev libasound2-dev libdrm-dev libgbm-dev \
             libva-dev libvdpau-dev libvulkan-dev libwayland-dev wayland-protocols libx11-dev libxext-dev libxrandr-dev \
             libxss-dev libxpresent-dev libxv-dev libxinerama-dev libegl-dev libuchardet-dev liblua5.2-dev libgnutls28-dev \
@@ -128,6 +128,7 @@ jobs:
           ./dist/CedarApple-${VER}-x86_64.AppImage --appimage-extract >/dev/null
           ! LD_LIBRARY_PATH=squashfs-root/usr/lib ldd squashfs-root/usr/bin/cedarapple | grep "not found"
           test -f squashfs-root/usr/share/cedarapple/mpv/scripts/spincard/main.lua
+          test -f squashfs-root/usr/share/metainfo/cedarapple.appdata.xml
           ls -la dist
       - uses: actions/upload-artifact@v7
         with:
@@ -197,11 +198,9 @@ jobs:
   flatpak:
     needs: [meta, cargo-sources]
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
-      options: --privileged
     env:
       VER: ${{ needs.meta.outputs.ver }}
+      FLATPAK_IMAGE: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -210,12 +209,9 @@ jobs:
           path: packaging/flatpak
       - name: Add swap (the LTO release link of the Slint UI needs more than the runner's RAM)
         run: |
-          # The flatpak-builder image may have no mkswap/swapon: warn and go on.
-          if ! command -v mkswap >/dev/null || ! command -v swapon >/dev/null; then
-            echo "::warning::no mkswap/swapon in this image; building without extra swap"; free -h; exit 0
-          fi
-          f="$GITHUB_WORKSPACE/../swapfile"
-          fallocate -l 10G "$f" && chmod 600 "$f" && mkswap "$f" && swapon "$f" || echo "::warning::no swap"
+          # Configure swap on Ubuntu's host filesystem, not in the container.
+          sudo fallocate -l 10G /swapfile.cedar && sudo chmod 600 /swapfile.cedar
+          sudo mkswap /swapfile.cedar && sudo swapon /swapfile.cedar
           free -h
       # The public Jamendo client ID, into the build env at CI time only (never committed).
       - name: Jamendo client ID for the Flatpak build
@@ -226,12 +222,28 @@ jobs:
           M=packaging/flatpak/io.github.skonester.CedarApple.yml
           sed -i "s|^\( *\)CARGO_HOME: /run/build/cedarapple/cargo$|&\n\1CEDARAPPLE_JAMENDO_CLIENT_ID: '$CEDARAPPLE_JAMENDO_CLIENT_ID'|" "$M"
           grep -c CEDARAPPLE_JAMENDO_CLIENT_ID "$M"
-      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+      - name: Cache Flatpak sources and build results
+        uses: actions/cache@v5
         with:
-          bundle: cedarapple.flatpak
-          manifest-path: packaging/flatpak/io.github.skonester.CedarApple.yml
-          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.skonester.CedarApple.yml') }}
-          upload-artifact: false
+          path: .flatpak-builder
+          key: flatpak-builder-${{ runner.os }}-x86_64-${{ hashFiles('packaging/flatpak/io.github.skonester.CedarApple.yml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            flatpak-builder-${{ runner.os }}-x86_64-${{ hashFiles('packaging/flatpak/io.github.skonester.CedarApple.yml', 'Cargo.lock') }}-
+            flatpak-builder-${{ runner.os }}-x86_64-
+      - name: Build Flatpak bundle
+        # Call the builder directly: the upstream wrapper still declares Node 20.
+        run: |
+          docker run --rm --privileged \
+            --volume "$GITHUB_WORKSPACE:/work" --workdir /work \
+            "$FLATPAK_IMAGE" bash -euc '
+              xvfb-run --auto-servernum flatpak-builder \
+                --repo=repo --disable-rofiles-fuse --install-deps-from=flathub \
+                --force-clean --default-branch=master --arch=x86_64 --ccache \
+                build-dir packaging/flatpak/io.github.skonester.CedarApple.yml
+              flatpak build-bundle --arch=x86_64 \
+                --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+                repo cedarapple.flatpak io.github.skonester.CedarApple master
+            '
       - name: Name the bundle
         run: mkdir -p dist && mv cedarapple.flatpak "dist/cedarapple-${VER}-x86_64.flatpak"
       - uses: actions/upload-artifact@v7

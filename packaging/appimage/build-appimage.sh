@@ -49,6 +49,13 @@ mkdir -p "$APPDIR/usr/share/cedarapple" "$APPDIR/usr/share/licenses/cedarapple"
 cp -r "$ROOT/assets/mpv" "$APPDIR/usr/share/cedarapple/mpv"
 cp "$ROOT/LICENSE" "$ROOT"/licenses/* "$ROOT/vendor/README-librqbit.md" "$APPDIR/usr/share/licenses/cedarapple/"
 
+# Reuse the Flatpak metadata, matching the desktop filename in this AppImage.
+mkdir -p "$APPDIR/usr/share/metainfo"
+sed 's|>io.github.skonester.CedarApple.desktop<|>cedarapple.desktop<|' \
+  "$ROOT/packaging/flatpak/io.github.skonester.CedarApple.metainfo.xml" \
+  > "$APPDIR/usr/share/metainfo/cedarapple.appdata.xml"
+appstreamcli validate --no-net "$APPDIR/usr/share/metainfo/cedarapple.appdata.xml"
+
 # Belt and braces: strip anything linuxdeploy left with symbols.
 find "$APPDIR/usr" -type f \( -name '*.so*' -o -path '*/bin/*' \) -exec strip --strip-unneeded {} + 2>/dev/null || true
 

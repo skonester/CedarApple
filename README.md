@@ -4,8 +4,8 @@
 
 # CedarApple
 
-A desktop media player written in Rust, built on libmpv, that can stream
-torrents directly.
+A desktop media player written in Rust, built on libmpv, that can view local media,stream
+torrents and Youtube directly.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/skonester/CedarApple/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/skonester/CedarApple/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/skonester/CedarApple?logo=github&color=e8590c)](https://github.com/skonester/CedarApple/releases/latest)
