@@ -13,6 +13,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DEPS=${DEPS:-$PWD/deps}
 TOOLS=${TOOLS:-$PWD/.appimage-tools}
 APPDIR=${APPDIR:-$PWD/AppDir}
+APP_ID=io.github.skonester.CedarApple
 export APPIMAGE_EXTRACT_AND_RUN=1
 
 mkdir -p "$TOOLS"
@@ -21,11 +22,14 @@ fetch linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/c
 fetch appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
 
 rm -rf "$APPDIR"
+# appimagetool finds metadata by the desktop basename, and AppStream requires
+# that basename to match the XML component ID. Keep the Flatpak ID unchanged.
+install -Dm644 "$ROOT/packaging/cedarapple.desktop" "$TOOLS/$APP_ID.desktop"
 # linuxdeploy resolves libraries (skipping the AppImage excludelist: glibc,
 # GL/EGL, libX11/xcb core, fontconfig/freetype, ...) and strips everything.
 LD_LIBRARY_PATH="$DEPS/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   "$TOOLS/linuxdeploy" --appdir "$APPDIR" --executable "$ROOT/target/release/cedarapple" \
-  --desktop-file "$ROOT/packaging/cedarapple.desktop" --icon-file "$ROOT/packaging/cedarapple.png"
+  --desktop-file "$TOOLS/$APP_ID.desktop" --icon-file "$ROOT/packaging/cedarapple.png"
 
 # Host-provided stacks that every desktop ships and that must match the user's
 # session/drivers (per the AppImage excludelist spirit): Wayland, D-Bus,
@@ -49,12 +53,11 @@ mkdir -p "$APPDIR/usr/share/cedarapple" "$APPDIR/usr/share/licenses/cedarapple"
 cp -r "$ROOT/assets/mpv" "$APPDIR/usr/share/cedarapple/mpv"
 cp "$ROOT/LICENSE" "$ROOT"/licenses/* "$ROOT/vendor/README-librqbit.md" "$APPDIR/usr/share/licenses/cedarapple/"
 
-# Reuse the Flatpak metadata, matching the desktop filename in this AppImage.
-mkdir -p "$APPDIR/usr/share/metainfo"
-sed 's|>io.github.skonester.CedarApple.desktop<|>cedarapple.desktop<|' \
-  "$ROOT/packaging/flatpak/io.github.skonester.CedarApple.metainfo.xml" \
-  > "$APPDIR/usr/share/metainfo/cedarapple.appdata.xml"
-appstreamcli validate --no-net "$APPDIR/usr/share/metainfo/cedarapple.appdata.xml"
+# Reuse the canonical metadata verbatim. appimagetool expects .appdata.xml.
+install -Dm644 "$ROOT/packaging/flatpak/$APP_ID.metainfo.xml" \
+  "$APPDIR/usr/share/metainfo/$APP_ID.appdata.xml"
+# Use appimagetool's tree validation, which also checks filenames and launchers.
+appstreamcli validate-tree --no-net "$APPDIR"
 
 # Belt and braces: strip anything linuxdeploy left with symbols.
 find "$APPDIR/usr" -type f \( -name '*.so*' -o -path '*/bin/*' \) -exec strip --strip-unneeded {} + 2>/dev/null || true

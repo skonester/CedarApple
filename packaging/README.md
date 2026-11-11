@@ -24,8 +24,10 @@ client ID baked into the builds so Free Music searches Jamendo without setup.
 - `flatpak/io.github.skonester.CedarApple.yml` builds libmpv and CedarApple;
   its `cargo-sources.json` is generated from `Cargo.lock` (not committed).
 - `flatpak/io.github.skonester.CedarApple.metainfo.xml` supplies AppStream
-  metadata for Flatpak and AppImage. The AppImage script adapts its desktop ID
-  and validates it with `appstreamcli` (the `appstream` package on Ubuntu).
+  metadata for Flatpak and AppImage. The AppImage uses the same
+  `io.github.skonester.CedarApple` ID for its desktop and metadata filenames,
+  and checks the complete AppDir with `appstreamcli validate-tree` (the
+  `appstream` package on Ubuntu).
 
 The Flatpak release job sets up swap on the Ubuntu host and runs the builder
 inside the Freedesktop container, with `.flatpak-builder` cached between runs.

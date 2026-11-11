@@ -128,7 +128,9 @@ jobs:
           ./dist/CedarApple-${VER}-x86_64.AppImage --appimage-extract >/dev/null
           ! LD_LIBRARY_PATH=squashfs-root/usr/lib ldd squashfs-root/usr/bin/cedarapple | grep "not found"
           test -f squashfs-root/usr/share/cedarapple/mpv/scripts/spincard/main.lua
-          test -f squashfs-root/usr/share/metainfo/cedarapple.appdata.xml
+          test -f squashfs-root/usr/share/metainfo/io.github.skonester.CedarApple.appdata.xml
+          test -f squashfs-root/usr/share/applications/io.github.skonester.CedarApple.desktop
+          test -f squashfs-root/io.github.skonester.CedarApple.desktop
           ls -la dist
       - uses: actions/upload-artifact@v7
         with:
