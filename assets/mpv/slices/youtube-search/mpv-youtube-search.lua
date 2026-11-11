@@ -1,0 +1,610 @@
+-- Adapted for CedarApple Slices from Lunedor/mpv-youtube-search.
+-- Attribution: https://github.com/Lunedor/mpv-youtube-search
+-- In CedarApple, Lua owns search/paging/selection; the host draws the grid
+-- and resolves playback through its own queue. Standalone mpv still works.
+local slice = rawget(_G, "cedarapple_slice")
+local input = not slice and require("mp.input") or nil
+local utils = require("mp.utils")
+local msg = require("mp.msg")
+
+--------------------------------------------------------------------------
+-- Config & Global Math
+--------------------------------------------------------------------------
+
+local opts = {
+    yt_dlp_path = "yt-dlp",
+    ffmpeg_path = "ffmpeg",
+    page_size   = 8,
+    search_key  = "Ctrl+s",
+}
+
+(require "mp.options").read_options(opts, "mpv-youtube-search")
+
+local function resolve_path(path)
+    if path:sub(1, 3) == "~~/" then
+        return mp.command_native({"expand-path", path})
+    end
+    return path
+end
+
+opts.yt_dlp_path = resolve_path(opts.yt_dlp_path)
+opts.ffmpeg_path = resolve_path(opts.ffmpeg_path)
+
+local THUMB_W, THUMB_H = 320, 180
+local COLS = 4
+local BASE_ID = 1
+local EXPECTED_SIZE = THUMB_W * THUMB_H * 4 -- 230400 bytes
+local GRID_WIDTH, GRID_HEIGHT = 1360, 900
+local MAX_THUMB_CACHE_BYTES = 64 * 1024 * 1024
+
+--------------------------------------------------------------------------
+-- Pathing
+--------------------------------------------------------------------------
+
+local is_windows = package.config:sub(1,1) == "\\"
+local thumb_dir = mp.command_native({"expand-path", "~~/"}) .. "/ytsearch_bgra"
+thumb_dir = thumb_dir:gsub("\\", "/")
+
+if not slice and is_windows then
+    os.execute('mkdir "' .. thumb_dir:gsub("/", "\\") .. '" 2>nul')
+elseif not slice then
+    os.execute('mkdir -p "' .. thumb_dir .. '"')
+end
+
+local function cleanup_thumbnail_cache()
+    local files = utils.readdir(thumb_dir, "files") or {}
+    local cached = {}
+    local total_size = 0
+
+    for _, name in ipairs(files) do
+        if name:match("%.bgra$") then
+            local path = thumb_dir .. "/" .. name
+            local info = utils.file_info(path)
+            if info and info.size then
+                total_size = total_size + info.size
+                table.insert(cached, {
+                    path = path,
+                    size = info.size,
+                    mtime = info.mtime or 0,
+                })
+            end
+        end
+    end
+
+    if total_size <= MAX_THUMB_CACHE_BYTES then return end
+
+    table.sort(cached, function(left, right)
+        return left.mtime < right.mtime
+    end)
+
+    for _, file in ipairs(cached) do
+        if total_size <= MAX_THUMB_CACHE_BYTES then break end
+        if os.remove(file.path) then
+            total_size = total_size - file.size
+        end
+    end
+end
+
+local function get_bgra_path(vid_id, page)
+    return thumb_dir .. "/" .. tostring(vid_id) .. "_p" .. tostring(page) .. ".bgra"
+end
+
+local function get_thumb_key(vid_id, page)
+    return tostring(vid_id) .. "_p" .. tostring(page)
+end
+
+--------------------------------------------------------------------------
+-- State & Cleanup Helpers
+--------------------------------------------------------------------------
+
+local state = {
+    active = false,
+    query = nil,
+    page = 1,
+    results = {},
+    cursor = 1,
+    fetching = false,
+    thumbnail_status = {},
+    saved_geometry = nil,
+    feedback = nil,
+    feedback_timer = nil,
+    request = nil,
+    generation = 0,
+    error = nil,
+    has_next = false,
+}
+
+local ov_ass = mp.create_osd_overlay("ass-events")
+
+local function clear_overlays()
+    if slice then return end
+    for i = 1, opts.page_size do
+        mp.commandv("overlay-remove", BASE_ID + i)
+    end
+end
+
+local function resize_for_grid()
+    if state.saved_geometry or mp.get_property_bool("fullscreen", false)
+        or mp.get_property_bool("window-maximized", false) then
+        return
+    end
+
+    local window_width = mp.get_property_number("osd-width")
+        or mp.get_property_number("window-width")
+    local window_height = mp.get_property_number("osd-height")
+        or mp.get_property_number("window-height")
+    if window_width and window_height
+        and window_width >= GRID_WIDTH and window_height >= GRID_HEIGHT then
+        return
+    end
+
+    local target_width = math.max(GRID_WIDTH, window_width or GRID_WIDTH)
+    local target_height = math.max(GRID_HEIGHT, window_height or GRID_HEIGHT)
+    state.saved_geometry = mp.get_property("geometry") or ""
+    mp.set_property("geometry", target_width .. "x" .. target_height)
+end
+
+local function restore_window()
+    if state.saved_geometry then
+        mp.set_property("geometry", state.saved_geometry)
+        state.saved_geometry = nil
+    end
+end
+
+local function show_feedback(text)
+    state.feedback = text
+    if state.feedback_timer then state.feedback_timer:kill() end
+    state.feedback_timer = mp.add_timeout(2.5, function()
+        state.feedback = nil
+        state.feedback_timer = nil
+        if state.active then draw_grid() end
+    end)
+    draw_grid()
+end
+
+--------------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------------
+
+local function escape_ass(str)
+    if not str then return "" end
+    return str:gsub("{", "\\{"):gsub("}", "\\}")
+end
+
+local function fmt_duration(sec)
+    if not sec then return "" end
+    sec = math.floor(sec)
+    local h = math.floor(sec / 3600)
+    local m = math.floor((sec % 3600) / 60)
+    local s = sec % 60
+    if h > 0 then return string.format("%d:%02d:%02d", h, m, s) end
+    return string.format("%d:%02d", m, s)
+end
+
+local function entry_url(entry)
+    if entry.url and entry.url:match("^https?://") then return entry.url end
+    if entry.id then
+        if entry.ie_key == "YoutubePlaylist" or entry._type == "playlist" then
+            return "https://www.youtube.com/playlist?list=" .. entry.id
+        end
+        return "https://www.youtube.com/watch?v=" .. entry.id
+    end
+    return entry.webpage_url or entry.url
+end
+
+--------------------------------------------------------------------------
+-- FFmpeg Thumbnail Pipeline
+--------------------------------------------------------------------------
+
+local function fetch_thumbnail(vid_id, page)
+    if slice then return end -- The native grid fetches JPEG thumbnails directly.
+    if not vid_id or not page then return end
+    local out_file = get_bgra_path(vid_id, page)
+    
+    local f = io.open(out_file, "r")
+    if f then 
+        local size = f:seek("end")
+        f:close()
+        if size and size >= EXPECTED_SIZE then
+            state.thumbnail_status[get_thumb_key(vid_id, page)] = "ready"
+            if state.active and state.page == page then draw_grid() end
+            return
+        end
+    end
+
+    state.thumbnail_status[get_thumb_key(vid_id, page)] = "loading"
+
+    local thumb_base = thumb_dir .. "/" .. tostring(vid_id) .. "_p" .. tostring(page)
+    local thumb_jpg = thumb_base .. ".jpg"
+    local yt_args = {
+        opts.yt_dlp_path,
+        "--no-warnings", "--skip-download", "--write-thumbnail",
+        "--convert-thumbnails", "jpg",
+        "--force-overwrites", "-o", thumb_base .. ".%(ext)s",
+        "https://www.youtube.com/watch?v=" .. vid_id,
+    }
+    if opts.ffmpeg_path ~= "ffmpeg" then
+        table.insert(yt_args, 7, "--ffmpeg-location")
+        table.insert(yt_args, 8, opts.ffmpeg_path)
+    end
+
+    mp.command_native_async({
+        name = "subprocess",
+        playback_only = false,
+        capture_stdout = false,
+        capture_stderr = true,
+        args = yt_args,
+    }, function(success, res, err)
+        if not success or not res or res.status ~= 0 then
+            state.thumbnail_status[get_thumb_key(vid_id, page)] = "failed"
+            msg.error("Thumbnail download failed for " .. tostring(vid_id) .. ": status=" .. tostring(res and res.status) .. " stderr=" .. tostring(res and res.stderr))
+            if state.active and state.page == page then draw_grid() end
+            return
+        end
+
+        local ffmpeg_args = {
+            opts.ffmpeg_path,
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-i", thumb_jpg,
+            "-vf", "scale=" .. THUMB_W .. ":" .. THUMB_H,
+            "-f", "rawvideo", "-pix_fmt", "bgra", out_file,
+        }
+        mp.command_native_async({
+            name = "subprocess",
+            playback_only = false,
+            capture_stdout = false,
+            capture_stderr = true,
+            args = ffmpeg_args,
+        }, function(ffmpeg_success, ffmpeg_res)
+            os.remove(thumb_jpg)
+            if not ffmpeg_success or not ffmpeg_res or ffmpeg_res.status ~= 0 then
+                state.thumbnail_status[get_thumb_key(vid_id, page)] = "failed"
+                msg.error("FFmpeg thumbnail conversion failed for " .. tostring(vid_id) .. ": status=" .. tostring(ffmpeg_res and ffmpeg_res.status) .. " stderr=" .. tostring(ffmpeg_res and ffmpeg_res.stderr))
+                if state.active and state.page == page then draw_grid() end
+            elseif state.active and state.page == page then
+                state.thumbnail_status[get_thumb_key(vid_id, page)] = "ready"
+                draw_grid()
+            else
+                state.thumbnail_status[get_thumb_key(vid_id, page)] = "ready"
+            end
+        end)
+    end)
+end
+
+--------------------------------------------------------------------------
+-- Core Grid Rendering
+--------------------------------------------------------------------------
+
+local forward_declare_fetch
+
+function draw_grid()
+    if not state.active then return end
+    if slice then
+        slice.emit("view", {
+            query = state.query or "", page = state.page,
+            selected = state.cursor - 1, results = state.results,
+            busy = state.fetching, error = state.error or "",
+            has_next = state.has_next, status = state.feedback or "",
+        })
+        return
+    end
+    
+    local osd_w = mp.get_property_number("osd-width") or 1280
+    local osd_h = mp.get_property_number("osd-height") or 720
+
+    ov_ass.res_x = osd_w
+    ov_ass.res_y = osd_h
+    
+    local PAD_X = math.floor((osd_w - (COLS * THUMB_W)) / (COLS + 1))
+    if PAD_X < 10 then PAD_X = 10 end
+    local START_X = PAD_X
+
+    local PAD_Y = 100
+    local TOTAL_H = (2 * THUMB_H) + PAD_Y
+    local START_Y = math.floor((osd_h - TOTAL_H) / 2) + 10
+
+    local ass = string.format("{\\an7\\pos(0,0)}{\\1a&H15&}{\\1c&H000000&}{\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}\n", osd_w, osd_w, osd_h, osd_h)
+    
+    local head_y = math.max(10, START_Y - 70)
+    ass = ass .. string.format("{\\an7\\pos(%d,%d)}{\\fs40\\b1\\1a&H00&\\1c&HFFFFFF&}⌕ Search: %s (Page %d){\\b0}\n", START_X, head_y, escape_ass(state.query), state.page)
+    if state.feedback then
+        ass = ass .. string.format("{\\an8\\pos(%d,55)}{\\fs24\\b1\\1c&HFFFFFF&\\3c&H0088CC&\\bord3} %s {\\b0}\n", osd_w / 2, escape_ass(state.feedback))
+    end
+    
+    clear_overlays()
+
+    for i = 1, math.min(#state.results, opts.page_size) do
+        local e = state.results[i]
+        local col = (i - 1) % COLS
+        local row = math.floor((i - 1) / COLS)
+        
+        local x = START_X + col * (THUMB_W + PAD_X)
+        local y = START_Y + row * (THUMB_H + PAD_Y)
+        
+        local has_image = false
+        if e.id then
+            local bgra_path = get_bgra_path(e.id, state.page)
+            local f = io.open(bgra_path, "r")
+            if f then
+                local size = f:seek("end")
+                f:close()
+                if size and size >= EXPECTED_SIZE then
+                    mp.commandv("overlay-add", BASE_ID + i, math.floor(x), math.floor(y), bgra_path, 0, "bgra", THUMB_W, THUMB_H, THUMB_W * 4)
+                    has_image = true
+                end
+            end
+        end
+        
+        if not has_image then
+            local thumb_status = e.id and state.thumbnail_status[get_thumb_key(e.id, state.page)] or "failed"
+            local placeholder = thumb_status == "loading" and "Loading..." or "No Image"
+            ass = ass .. string.format("{\\an7\\pos(%d,%d)}{\\1a&H00&}{\\1c&H222222&}{\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}\n", x, y, THUMB_W, THUMB_W, THUMB_H, THUMB_H)
+            ass = ass .. string.format("{\\an7\\pos(%d,%d)}{\\fs26\\1c&H777777&}%s\n", x + (THUMB_W/2) - 45, y + (THUMB_H/2) - 15, placeholder)
+        end
+        
+        local title = e.title or "(no title)"
+        if #title > 38 then title = title:sub(1, 35) .. "..." end
+        title = escape_ass(title)
+        
+        local clip_tag = string.format("\\clip(%d,%d,%d,%d)", x, 0, x + THUMB_W - 5, osd_h)
+        ass = ass .. string.format("{\\an7\\pos(%d,%d)%s}{\\fs18\\b1\\1a&H00&\\1c&HFFFFFF&}%s\n", x, y + THUMB_H + 10, clip_tag, title)
+        
+        local channel = e.channel or e.uploader or ""
+        if #channel > 20 then channel = channel:sub(1, 17) .. "..." end
+        channel = escape_ass(channel)
+        
+        local dur = e.duration and fmt_duration(e.duration) or "LIVE"
+        ass = ass .. string.format("{\\an7\\pos(%d,%d)%s}{\\fs14\\b0\\1c&HAAAAAA&}👤 %s   |   ⏱ %s\n", x, y + THUMB_H + 35, clip_tag, channel, dur)
+        
+        if i == state.cursor then
+            local bx, by = x - 4, y - 4
+            local bw, bh = THUMB_W + 8, THUMB_H + 8
+            ass = ass .. string.format("{\\an7\\pos(%d,%d)}{\\3c&H00FFFF&}{\\bord4}{\\1a&HFF&}{\\p1}m 0 0 l %d 0 l %d %d l 0 %d{\\p0}\n", bx, by, bw, bw, bh, bh)
+        end
+    end
+    
+    local footer_y = START_Y + (2 * (THUMB_H + PAD_Y)) - 15
+    ass = ass .. string.format("{\\an7\\pos(%d,%d)}{\\fs18\\1a&H00&\\1c&HAAAAAA&}⌨  [Arrows] Navigate   [Enter] Play   [Shift+Enter] Append   [N] Next Page   [P] Prev Page   [ESC] Close\n", START_X, footer_y)
+    
+    ov_ass.data = ass
+    ov_ass:update()
+end
+
+--------------------------------------------------------------------------
+-- Navigation & Control
+--------------------------------------------------------------------------
+
+local function close_grid()
+    state.generation = state.generation + 1
+    if state.request then mp.abort_async_command(state.request) end
+    state.request = nil
+    state.fetching = false
+    state.active = false
+    ov_ass:remove()
+    clear_overlays()
+    if state.feedback_timer then state.feedback_timer:kill() end
+    state.feedback = nil
+    state.feedback_timer = nil
+    restore_window()
+    mp.remove_key_binding("grid-up")
+    mp.remove_key_binding("grid-down")
+    mp.remove_key_binding("grid-left")
+    mp.remove_key_binding("grid-right")
+    mp.remove_key_binding("grid-enter")
+    mp.remove_key_binding("grid-append")
+    mp.remove_key_binding("grid-esc")
+    mp.remove_key_binding("grid-next")
+    mp.remove_key_binding("grid-prev")
+end
+
+local function move_cursor(dx, dy)
+    local idx = state.cursor - 1
+    local col = idx % COLS
+    local row = math.floor(idx / COLS)
+    
+    col = (col + dx) % COLS
+    
+    local max_rows = math.ceil(#state.results / COLS)
+    if max_rows == 0 then return end
+    row = (row + dy) % max_rows
+    
+    local new_idx = row * COLS + col + 1
+    if new_idx > #state.results then
+        new_idx = #state.results
+    end
+    
+    state.cursor = new_idx
+    draw_grid()
+end
+
+local function execute_selection(append)
+    local e = state.results[state.cursor]
+    if not e then return end
+    
+    local url = entry_url(e)
+    if slice then
+        slice.emit("play", {id = e.id, title = e.title or "YouTube video", append = append == true})
+        return
+    end
+    if append then
+        mp.commandv("loadfile", url, "append-play")
+        show_feedback("Added to playlist: " .. (e.title or url))
+    else
+        mp.commandv("loadfile", url, "replace")
+        close_grid()
+    end
+end
+
+local fetch_and_render
+
+local function bind_keys()
+    if slice then return end -- Slint forwards keys while the Slice grid has focus.
+    mp.add_forced_key_binding("UP", "grid-up", function() move_cursor(0, -1) end)
+    mp.add_forced_key_binding("DOWN", "grid-down", function() move_cursor(0, 1) end)
+    mp.add_forced_key_binding("LEFT", "grid-left", function() move_cursor(-1, 0) end)
+    mp.add_forced_key_binding("RIGHT", "grid-right", function() move_cursor(1, 0) end)
+    mp.add_forced_key_binding("ENTER", "grid-enter", function() execute_selection(false) end)
+    mp.add_forced_key_binding("Shift+ENTER", "grid-append", function() execute_selection(true) end)
+    mp.add_forced_key_binding("ESC", "grid-esc", close_grid)
+    
+    mp.add_forced_key_binding("n", "grid-next", function()
+        state.page = state.page + 1
+        fetch_and_render(state.query, state.page)
+    end)
+    mp.add_forced_key_binding("p", "grid-prev", function()
+        if state.page > 1 then
+            state.page = state.page - 1
+            fetch_and_render(state.query, state.page)
+        end
+    end)
+end
+
+function fetch_and_render(query, page)
+    if state.fetching then return end
+    page = math.max(1, math.floor(page or 1))
+    state.fetching = true
+    state.active = true
+    state.error = nil
+    state.query = query
+    state.page = page
+    state.generation = state.generation + 1
+    local generation = state.generation
+    if slice then draw_grid() end
+    
+    clear_overlays()
+    
+    local osd_w = mp.get_property_number("osd-width") or 1280
+    local osd_h = mp.get_property_number("osd-height") or 720
+    ov_ass.res_x, ov_ass.res_y = osd_w, osd_h
+    
+    if not slice then
+        ov_ass.data = string.format("{\\an5}{\\pos(%d,%d)}{\\fs50\\b1}Fetching Results...{\\b0}", osd_w/2, osd_h/2)
+        ov_ass:update()
+    end
+
+    local want = page * opts.page_size
+    local args = { opts.yt_dlp_path, "--ignore-config", "--flat-playlist", "--no-warnings", "--socket-timeout", "15", "--retries", "1", "-J", "--", "ytsearch" .. tostring(want) .. ":" .. query }
+
+    state.request = mp.command_native_async({
+        name = "subprocess",
+        playback_only = false,
+        args = args,
+        capture_stdout = true,
+        capture_stderr = true,
+    }, function(success, res, err)
+        if generation ~= state.generation then return end
+        state.request = nil
+        state.fetching = false
+        
+        if not success or not res or res.status ~= 0 or not res.stdout or res.stdout == "" then
+            msg.error("yt-dlp failed: status=" .. tostring(res and res.status) .. " stderr=" .. tostring(res and res.stderr))
+            if slice then
+                state.error = "YouTube search failed. Check your connection and retry."
+                draw_grid()
+                return
+            end
+            ov_ass.data = string.format("{\\an5}{\\pos(%d,%d)}{\\fs40\\1c&H0000FF&}Search Failed. Check console.", osd_w/2, osd_h/2)
+            ov_ass:update()
+            restore_window()
+            return
+        end
+
+        local ok, data = pcall(utils.parse_json, res.stdout)
+        if not ok or type(data) ~= "table" or type(data.entries) ~= "table" then
+            if slice then
+                state.error = "YouTube returned an unreadable search response."
+                draw_grid()
+                return
+            end
+        end
+        local entries = data and data.entries or {}
+        
+        local start_idx = (page - 1) * opts.page_size + 1
+        local end_idx = math.min(page * opts.page_size, #entries)
+        
+        state.results = {}
+        for i = start_idx, end_idx do
+            table.insert(state.results, entries[i])
+        end
+        
+        state.query = query
+        state.page = page
+        state.cursor = 1
+        state.active = true
+        state.has_next = #state.results == opts.page_size
+        
+        for _, e in ipairs(state.results) do
+            if e.id then fetch_thumbnail(e.id, state.page) end
+        end
+
+        bind_keys()
+        draw_grid()
+    end)
+end
+
+--------------------------------------------------------------------------
+-- Event Listeners & Initialization
+--------------------------------------------------------------------------
+
+mp.observe_property("osd-dimensions", "native", function(name, val)
+    if state.active then draw_grid() end
+end)
+
+if slice then
+    slice.on("configure", function(data)
+        opts.yt_dlp_path = data.yt_dlp_path or opts.yt_dlp_path
+        opts.page_size = math.max(1, math.min(24, math.floor(tonumber(data.page_size) or 8)))
+    end)
+    slice.on("search", function(data)
+        local query = tostring(data.query or "")
+        if query:match("^%s*$") then return end
+        close_grid()
+        fetch_and_render(query, 1)
+    end)
+    slice.on("page", function(data)
+        if not state.fetching and state.query and state.query ~= "" then
+            fetch_and_render(state.query, math.max(1, state.page + (tonumber(data.delta) or 0)))
+        end
+    end)
+    slice.on("select", function(data)
+        local index = math.floor(tonumber(data.index) or -1) + 1
+        if index >= 1 and index <= #state.results then state.cursor = index; draw_grid() end
+    end)
+    slice.on("activate", function(data)
+        if state.fetching then return end
+        local index = math.floor(tonumber(data.index) or (state.cursor - 1)) + 1
+        if index >= 1 and index <= #state.results then
+            state.cursor = index
+            execute_selection(data.append == true)
+        end
+    end)
+    slice.on("key", function(data)
+        if state.fetching then return end
+        COLS = math.max(1, math.min(8, math.floor(tonumber(data.columns) or 4)))
+        local key = data.key
+        if key == "up" then move_cursor(0, -1)
+        elseif key == "down" then move_cursor(0, 1)
+        elseif key == "left" then move_cursor(-1, 0)
+        elseif key == "right" then move_cursor(1, 0)
+        elseif key == "enter" then execute_selection(data.append == true) end
+    end)
+    slice.on("close", close_grid)
+    slice.on("shutdown", close_grid)
+else
+mp.add_key_binding(opts.search_key, "mpv-youtube-search", function()
+    if state.active then
+        close_grid()
+        return
+    end
+    
+    input.get({
+        prompt = "Search YouTube:",
+        submit = function(query)
+            if query == nil or query:match("^%s*$") then return end
+            cleanup_thumbnail_cache()
+            resize_for_grid()
+            fetch_and_render(query, 1)
+        end,
+    })
+end)
+end

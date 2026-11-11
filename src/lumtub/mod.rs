@@ -4,7 +4,7 @@ mod catalog;
 mod innertube;
 mod listing;
 mod store;
-mod tools;
+pub(crate) mod tools;
 
 use crate::{AppWindow, LumtubRow, LumtubState};
 use catalog::{Item, Page, PageOrVideo};

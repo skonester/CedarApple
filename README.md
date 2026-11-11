@@ -123,6 +123,16 @@ You can instead place them beside the CedarApple executable or install them
 on PATH. The browser remains responsive during setup, and **Cancel** stops
 the pending operation. Search terms and playback requests are sent to YouTube.
 
+### Slices
+
+Open **Slices** from the start screen or toolbar to manage Lua add-ons.
+The included **YouTube Search** Slice is adapted from
+[Lunedor/mpv-youtube-search](https://github.com/Lunedor/mpv-youtube-search).
+Press **Ctrl+S** for quick search, browse thumbnail pages, and play a video or
+add it to CedarApple's queue. It uses the shared YouTube playback tools and
+supports keyboard navigation. Each Slice can be switched off independently.
+See [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md) for installation and the Lua adapter.
+
 ## Install
 
 Builds are on the
@@ -226,6 +236,7 @@ cache directories:
 | `history.json` | Remembered torrents, watched files, and resume positions |
 | `free-music.json` | Free Music settings |
 | `lumtub.json` | YouTube watch later, followed channels and local history |
+| `slices.json` | Disabled Lua Slices |
 | `cache/lumtub-tools/` | yt-dlp and Deno prepared for YouTube playback |
 | `cache/torrents/` | Torrent session data and downloaded content |
 | `cache/free-music-covers/` | Cached Free Music artwork |
@@ -263,6 +274,11 @@ Popelyshyn.
 YouTube browsing and stream resolution are adapted from
 [Lumtub](https://github.com/0x696c757a696f/lumtub), GPL-3.0-or-later.
 See [licenses/Lumtub.txt](licenses/Lumtub.txt) and [ports.md](ports.md).
+
+The YouTube Search Lua Slice is adapted from
+[Lunedor/mpv-youtube-search](https://github.com/Lunedor/mpv-youtube-search).
+Attribution and adaptation notes are in
+[licenses/mpv-youtube-search.txt](licenses/mpv-youtube-search.txt).
 
 Vendored `librqbit` crates are Apache-2.0. Additional inherited MIT notices and
 the Apache-2.0 text are kept in [licenses/](licenses/); changes to the vendored

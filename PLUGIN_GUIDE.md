@@ -1,11 +1,74 @@
 # CedarApple Plugin & Extension Guide
 
+## Slices in plain language
+
+**Slices are CedarApple add-ons.** A Slice can add a media source, automate
+playback, or provide a small tool inside the player. **Parts** is the scripting
+language used by `.pts` add-ons; **Lua Slices** run with mpv's Lua interpreter.
+
+Click **Slices** on the start screen or player toolbar to manage Lua Slices.
+**YouTube Search** is included as the first example, adapted from
+[Lunedor/mpv-youtube-search](https://github.com/Lunedor/mpv-youtube-search).
+Open it, enter a query, and choose **Play** or **+ Queue**. Arrow keys select,
+Enter plays, Shift+Enter queues, N/P change page, and Escape closes the Slice.
+**Ctrl+S** opens it directly from the start screen or player. Turn its switch
+off in Slices to unload it; that choice survives an application restart.
+
+The basic signed-out Lua variant is included. Search, paging and selection
+remain Lua; CedarApple draws a native grid and routes playback through its
+queue. It shares the yt-dlp/Deno tools prepared for Lumtub and loads thumbnails
+directly, so no ffmpeg executable is required by this Slice.
+
+### Adding a Lua Slice
+
+Choose **Slices → Slices folder**, then add a folder containing `slice.json`
+and the Lua entry script. Click **Refresh** to discover it. Bundled Slices live
+under `mpv/slices/` beside the executable (or the installed shared mpv folder).
+
+```json
+{
+  "schema": 1,
+  "id": "youtube-search",
+  "name": "YouTube Search",
+  "description": "Search and queue YouTube videos",
+  "author": "Lunedor",
+  "engine": "mpv-lua",
+  "entry": "mpv-youtube-search.lua",
+  "view": "search-grid",
+  "source": "https://github.com/Lunedor/mpv-youtube-search"
+}
+```
+
+The current Lua adapter supports the `search-grid` view. Scripts need an
+adapter to communicate with it; dropping an arbitrary mpv Lua script into this
+folder does not automatically give it a native UI. The host supplies
+`cedarapple_slice.on(event, callback)` and `.emit(event, data)`:
+
+- Host events: `configure`, `search`, `page`, `select`, `activate`, `key`,
+  `close`, and `shutdown`.
+- Script events: `view` (query, page, selected index, results, busy, error,
+  has_next and status), `play` (YouTube video ID and append flag), and `error`.
+- The wrapper emits `ready` after the script initializes. Each loaded
+  instance has a separate session, so unloaded instances cannot update the UI.
+
+The current `play` event resolves YouTube video IDs. Additional playback
+sources and view types can extend the adapter. The included Slice is a working
+example in `assets/mpv/slices/youtube-search/`.
+
+Lua Slices have the capabilities of mpv Lua scripts, including process and
+file access. Install scripts you trust. Lua errors appear in the Slices screen.
+Closing the view cancels search/resolution; disabling sends `shutdown` and
+unloads that Lua instance. These are separate from mpv's auto-loaded scripts
+under `mpv/scripts/`.
+
+## Parts scripts
+
 Enable **Parts plugins** in **Settings → Library**, then click **Apply**.
 Use **Open folder** to find the script directory. Enabled scripts load on startup,
 receive playback events, and can control the player. Their media-provider hooks
 are browsable in **Library → Parts plugins**. Load errors appear in the Library.
 
-CedarApple plugins and extensions are written in the **Parts** scripting language (`.pts` files). Scripts run in an embedded VM with network access and player controls. Install only scripts you trust. Edits reload without compilation.
+Parts plugins and extensions use the **Parts** scripting language (`.pts` files). Scripts run in an embedded VM with network access and player controls. Install only scripts you trust. Edits reload without compilation.
 
 A single Parts script can serve as:
 - **Playback Extension**: React to playback events, track watch progress, integrate with external APIs (scrobbling, Discord RPC, AniList, etc.), or control the player.

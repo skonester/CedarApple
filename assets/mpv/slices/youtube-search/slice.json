@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "youtube-search",
+  "name": "YouTube Search",
+  "description": "Search YouTube, browse thumbnail pages, and play or queue videos.",
+  "author": "Lunedor",
+  "engine": "mpv-lua",
+  "entry": "mpv-youtube-search.lua",
+  "view": "search-grid",
+  "source": "https://github.com/Lunedor/mpv-youtube-search"
+}

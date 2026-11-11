@@ -134,6 +134,7 @@ export component StartScreen inherits Rectangle {
     callback open-music();
     callback open-library();
     callback open-lumtub();
+    callback open-slices();
     // The Settings dialog (ui/settings.slint).
     callback open-settings();
     callback open-torrent(string);
@@ -246,6 +247,11 @@ export component StartScreen inherits Rectangle {
                 text: "Lumtub";
                 icon: Ic.play;
                 clicked => { root.open-lumtub(); }
+            }
+            OutlineButton {
+                text: "Slices";
+                icon: Ic.tune;
+                clicked => { root.open-slices(); }
             }
         }
 

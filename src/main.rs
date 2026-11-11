@@ -19,6 +19,7 @@ mod player;
 mod playback;
 mod scrub;
 mod settings;
+mod slices;
 mod torrent;
 mod torrent_storage;
 mod torrent_ui;
@@ -277,6 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timers = playback::install(&ui, mpv.clone(), state.clone(), discord.clone());
     library::install(&ui, state.clone());
     lumtub::install(&ui);
+    slices::install(&ui, mpv.clone());
     // The Free Music browser (src/free_music), which plays through playback.
     let music_timer = free_music::install(&ui);
 
@@ -307,6 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         move || {
             let Some(ui) = ui_render.upgrade() else { return };
             playback::tick(&ui);
+            slices::tick(&ui);
             if let Some(rctx) = mpv_r.borrow().as_ref()
                 && (unsafe { mpv_render_context_update(rctx.get()) } & 1) != 0
             {
@@ -354,6 +357,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     playback::shutdown();
     library::shutdown();
     lumtub::shutdown();
+    slices::shutdown();
     drop(timers);
     drop(music_timer);
 

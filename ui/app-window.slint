@@ -16,6 +16,7 @@ import { MusicDialog, MusicCard, FreeMusicState } from "./music.slint";
 import { SettingsDialog, SettingsState } from "./settings.slint";
 import { LibraryDialog, LibraryState } from "./library.slint";
 import { LumtubDialog, LumtubState } from "./lumtub.slint";
+import { SlicesDialog, SlicesState } from "./slices.slint";
 import { Spinner } from "std-widgets.slint";
 
 export { TrackInfo, ChapterInfo, QueueEntry, Band, TorrentRowData, PickFile, FmRow, FmFilter, SettingRow } from "./types.slint";
@@ -23,6 +24,7 @@ export { FreeMusicState } from "./music.slint";
 export { SettingsState } from "./settings.slint";
 export { LibraryState, LibraryRow } from "./library.slint";
 export { LumtubState, LumtubRow } from "./lumtub.slint";
+export { SlicesState, SliceInfo, SliceCard } from "./slices.slint";
 
 // A text button in the top bar, for CedarApple's own mpv-side tools.
 component BarTextButton inherits Rectangle {
@@ -203,6 +205,10 @@ export component AppWindow inherits Window {
     property <bool> settings-open: SettingsState.open;
     property <bool> library-open: LibraryState.open;
     property <bool> lumtub-open: LumtubState.open;
+    property <bool> slices-open: SlicesState.open;
+    changed slices-open => {
+        if (!root.slices-open) { key-handler.focus(); }
+    }
     changed lumtub-open => {
         if (!root.lumtub-open) { key-handler.focus(); }
     }
@@ -211,7 +217,7 @@ export component AppWindow inherits Window {
     }
     changed settings-open => {
         // Back to the keys, unless Settings was opened from Free Music.
-        if (!root.settings-open && !FreeMusicState.open && !LibraryState.open && !LumtubState.open) {
+        if (!root.settings-open && !FreeMusicState.open && !LibraryState.open && !LumtubState.open && !SlicesState.open) {
             key-handler.focus();
         }
     }
@@ -221,6 +227,10 @@ export component AppWindow inherits Window {
     key-handler := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
+            if ((event.text == "s" || event.text == "S") && event.modifiers.control) {
+                SlicesState.launch("youtube-search");
+                return accept;
+            }
             if (event.text == Key.Escape) {
                 if (root.open-menu != "" || root.ctx-open) {
                     root.open-menu = "";
@@ -368,6 +378,7 @@ export component AppWindow inherits Window {
         open-music => { FreeMusicState.opened(); }
         open-library => { LibraryState.opened(); }
         open-lumtub => { LumtubState.opened(); }
+        open-slices => { SlicesState.opened(); }
         open-settings => { SettingsState.opened(""); }
         open-torrent(folder) => { root.open_torrent_row(folder); }
         reveal-torrent(folder) => { root.reveal_torrent_row(folder); }
@@ -445,6 +456,11 @@ export component AppWindow inherits Window {
                     text: "Lumtub";
                     tip: "Browse YouTube";
                     clicked => { LumtubState.opened(); }
+                }
+                BarTextButton {
+                    text: "Slices";
+                    tip: "Open add-ons (YouTube Search: Ctrl+S)";
+                    clicked => { SlicesState.opened(); }
                 }
                 BarTextButton {
                     text: "i";
@@ -921,6 +937,10 @@ export component AppWindow inherits Window {
 
     if LumtubState.open : LumtubDialog {
         init => { self.focus-input(); }
+    }
+
+    if SlicesState.open : SlicesDialog {
+        init => { self.focus-default(); }
     }
 
     if SettingsState.open : SettingsDialog {

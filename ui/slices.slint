@@ -1,0 +1,250 @@
+import { Theme } from "./theme.slint";
+import { DialogButton } from "./dialogs.slint";
+import { Field, Switch } from "./widgets.slint";
+import { SettingsState } from "./settings.slint";
+import { ScrollView, Spinner } from "std-widgets.slint";
+
+export struct SliceInfo {
+    id: string,
+    name: string,
+    description: string,
+    author: string,
+    source: string,
+    enabled: bool,
+}
+export struct SliceCard {
+    title: string,
+    detail: string,
+    cover: image,
+    has-cover: bool,
+}
+export global SlicesState {
+    in-out property <bool> open;
+    in-out property <bool> browsing;
+    in-out property <bool> busy;
+    in-out property <bool> resolving;
+    in-out property <string> title;
+    in-out property <string> query;
+    in-out property <string> result-query;
+    in-out property <string> error;
+    in-out property <string> status;
+    in-out property <int> page: 1;
+    in-out property <bool> has-next;
+    in-out property <int> selected: -1;
+    in-out property <int> columns: 4;
+    in-out property <[SliceInfo]> items;
+    in-out property <[SliceCard]> cards;
+    callback opened();
+    callback closed();
+    callback manage();
+    callback launch(string);
+    callback enabled(string, bool);
+    callback search();
+    callback key(string, bool);
+    callback select(int);
+    callback activate(int, bool);
+    callback change-page(int);
+    callback cancel();
+    callback retry();
+    callback folder();
+    callback source(string);
+    callback refresh();
+}
+
+component VideoCard inherits Rectangle {
+    in property <SliceCard> data;
+    in property <bool> selected;
+    in property <bool> enabled;
+    callback select();
+    callback activate(bool);
+    border-radius: 10px;
+    border-width: 2px;
+    border-color: root.selected ? Theme.accent : transparent;
+    background: touch.has-hover ? Theme.menu-hover : #ffffff09;
+    height: self.width * 9 / 16 + 96px;
+    clip: true;
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.select(); }
+        double-clicked => { root.activate(false); }
+    }
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+        Rectangle {
+            height: (root.width - 16px) * 9 / 16;
+            background: #00000060;
+            border-radius: 5px;
+            clip: true;
+            if root.data.has-cover : Image { source: root.data.cover; image-fit: contain; }
+            if !root.data.has-cover : Text { text: "▶"; color: Theme.muted; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        Text { text: root.data.title; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; }
+        Text { text: root.data.detail; color: Theme.muted; font-size: 10px; overflow: elide; }
+        HorizontalLayout {
+            spacing: 4px;
+            alignment: start;
+            DialogButton { text: "Play"; enabled: root.enabled; clicked => { root.activate(false); } }
+            DialogButton { text: "+ Queue"; enabled: root.enabled; clicked => { root.activate(true); } }
+        }
+    }
+}
+
+export component SlicesDialog inherits Rectangle {
+    public function focus-keys() { keys.focus(); }
+    public function focus-default() {
+        if (SlicesState.browsing) { search-box.focus-input(); }
+        else { keys.focus(); }
+    }
+    property <bool> browsing: SlicesState.browsing;
+    property <int> grid-columns: panel.width > 960px ? 4 : panel.width > 660px ? 3 : 2;
+    changed grid-columns => { SlicesState.columns = root.grid-columns; }
+    changed browsing => {
+        if (root.browsing) { search-box.focus-input(); }
+        else { keys.focus(); }
+    }
+    property <bool> settings-open: SettingsState.open;
+    changed settings-open => { if (!root.settings-open) { keys.focus(); } }
+    background: #000000a6;
+    TouchArea { clicked => { SlicesState.closed(); } }
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) { SlicesState.closed(); return accept; }
+            if (SlicesState.browsing) {
+                if ((event.text == "s" || event.text == "S") && event.modifiers.control) { search-box.focus-input(); return accept; }
+                if (event.text == Key.UpArrow) { SlicesState.key("up", false); return accept; }
+                if (event.text == Key.DownArrow) { SlicesState.key("down", false); return accept; }
+                if (event.text == Key.LeftArrow) { SlicesState.key("left", false); return accept; }
+                if (event.text == Key.RightArrow) { SlicesState.key("right", false); return accept; }
+                if (event.text == Key.Return) { SlicesState.key("enter", event.modifiers.shift); return accept; }
+                if (event.text == "n" && !SlicesState.busy && SlicesState.has-next) { SlicesState.change-page(1); return accept; }
+                if (event.text == "p" && !SlicesState.busy && SlicesState.page > 1) { SlicesState.change-page(-1); return accept; }
+            }
+            return reject;
+        }
+        panel := Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 16px;
+            width: Math.min(SlicesState.browsing ? 1140px : 820px, parent.width - 32px);
+            height: parent.height - 32px;
+            background: Theme.dialog-bg;
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: #ffffff24;
+            clip: true;
+            TouchArea { }
+            VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: SlicesState.browsing ? SlicesState.title : "Slices"; color: Theme.text; font-size: 22px; font-weight: 600; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                    if SlicesState.browsing : DialogButton { text: "All Slices"; clicked => { SlicesState.manage(); } }
+                    DialogButton { text: "Close"; clicked => { SlicesState.closed(); } }
+                }
+                if !SlicesState.browsing : Text { text: "Add-ons for CedarApple"; color: Theme.text-dim; font-size: 13px; }
+                if SlicesState.error != "" : HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: SlicesState.error; color: Theme.error; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+                    if SlicesState.browsing : DialogButton { text: "Retry"; clicked => { SlicesState.retry(); search-box.focus-input(); } }
+                }
+                if !SlicesState.browsing : ScrollView {
+                    vertical-stretch: 1;
+                    viewport-width: self.visible-width;
+                    viewport-height: installed.preferred-height;
+                    installed := VerticalLayout {
+                        width: parent.visible-width - 12px;
+                        alignment: start;
+                        spacing: 10px;
+                        for slice in SlicesState.items : Rectangle {
+                            height: 166px;
+                            border-radius: 10px;
+                            background: #ffffff08;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    Text { text: slice.name; color: Theme.text; font-size: 16px; font-weight: 600; horizontal-stretch: 1; vertical-alignment: center; }
+                                    Switch { on: slice.enabled; toggled(on) => { SlicesState.enabled(slice.id, on); } }
+                                }
+                                Text { text: slice.description; color: Theme.text-dim; font-size: 12px; wrap: word-wrap; }
+                                Text { text: "Lua · " + slice.author; color: Theme.muted; font-size: 11px; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    DialogButton { text: "Open"; primary: true; enabled: slice.enabled; clicked => { SlicesState.launch(slice.id); search-box.focus-input(); } }
+                                    DialogButton { text: "Source repository"; clicked => { SlicesState.source(slice.id); } }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                            }
+                        }
+                        if SlicesState.items.length == 0 : Text { text: "No Lua Slices installed. Open the Slices folder to add one, then refresh."; color: Theme.text-dim; font-size: 13px; wrap: word-wrap; }
+                    }
+                }
+                // This field stays instantiated so focus can move to it on launch.
+                search-row := HorizontalLayout {
+                    height: SlicesState.browsing ? 36px : 0px;
+                    spacing: 8px;
+                    search-box := Field {
+                        visible: SlicesState.browsing;
+                        horizontal-stretch: 1;
+                        text <=> SlicesState.query;
+                        placeholder: "Search YouTube…";
+                        accepted => { SlicesState.search(); keys.focus(); }
+                    }
+                    DialogButton { visible: SlicesState.browsing; text: "Search"; primary: true; enabled: !SlicesState.busy && !SlicesState.resolving; clicked => { SlicesState.search(); keys.focus(); } }
+                }
+                if SlicesState.browsing : results := ScrollView {
+                    vertical-stretch: 1;
+                    viewport-width: self.visible-width;
+                    viewport-height: grid.preferred-height;
+                    property <int> columns: root.grid-columns;
+                    property <int> page: SlicesState.page;
+                    changed page => { self.viewport-y = 0; }
+                    grid := VerticalLayout {
+                        width: results.visible-width - 12px;
+                        spacing: 10px;
+                        alignment: start;
+                        for row in Math.ceil(SlicesState.cards.length / results.columns) : HorizontalLayout {
+                            spacing: 10px;
+                            for column in results.columns : VideoCard {
+                                property <int> index: row * results.columns + column;
+                                width: (grid.width - (results.columns - 1) * 10px) / results.columns;
+                                data: SlicesState.cards[self.index];
+                                selected: self.index == SlicesState.selected;
+                                enabled: self.index < SlicesState.cards.length && !SlicesState.busy && !SlicesState.resolving;
+                                opacity: self.index < SlicesState.cards.length ? 1 : 0;
+                                select => { SlicesState.select(self.index); keys.focus(); }
+                                activate(append) => { SlicesState.activate(self.index, append); keys.focus(); }
+                            }
+                        }
+                        if SlicesState.cards.length == 0 && !SlicesState.busy : Rectangle {
+                            height: 160px;
+                            Text { text: SlicesState.result-query == "" ? "Search for a video to start." : "No results on this page."; color: Theme.text-dim; font-size: 15px; vertical-alignment: center; horizontal-alignment: center; }
+                        }
+                    }
+                }
+                if SlicesState.browsing : HorizontalLayout {
+                    spacing: 8px;
+                    DialogButton { text: "Previous"; enabled: SlicesState.page > 1 && !SlicesState.busy && !SlicesState.resolving; clicked => { SlicesState.change-page(-1); keys.focus(); } }
+                    Text { text: "Page " + SlicesState.page; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+                    DialogButton { text: "Next"; enabled: SlicesState.has-next && !SlicesState.busy && !SlicesState.resolving; clicked => { SlicesState.change-page(1); keys.focus(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if !SlicesState.browsing : HorizontalLayout {
+                    spacing: 6px;
+                    DialogButton { text: "Slices folder"; clicked => { SlicesState.folder(); } }
+                    DialogButton { text: "Refresh"; clicked => { SlicesState.refresh(); } }
+                    DialogButton { text: "Parts scripts…"; clicked => { SettingsState.opened("Library"); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    if SlicesState.busy || SlicesState.resolving : Spinner { indeterminate: true; width: 18px; height: 18px; }
+                    Text { text: SlicesState.status; color: Theme.muted; font-size: 11px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    if SlicesState.busy || SlicesState.resolving : DialogButton { text: "Cancel"; clicked => { SlicesState.cancel(); } }
+                }
+            }
+        }
+    }
+}

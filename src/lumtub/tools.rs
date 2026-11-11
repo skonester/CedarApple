@@ -135,7 +135,7 @@ async fn save(root: &Path, name: &str, bytes: Vec<u8>) -> Result<PathBuf, String
     Ok(path)
 }
 
-async fn ready() -> Result<(PathBuf, PathBuf), String> {
+pub(crate) async fn ready() -> Result<(PathBuf, PathBuf), String> {
     let _guard = INSTALL.lock().await;
     let root = cache()?;
     let yt = find("yt-dlp", &root);

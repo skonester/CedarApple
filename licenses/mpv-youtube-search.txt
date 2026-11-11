@@ -1,0 +1,12 @@
+YouTube Search Slice
+
+Original Lua script by Lunedor:
+https://github.com/Lunedor/mpv-youtube-search
+
+Adapted from the locally supplied mpv-youtube-search-main/mpv-youtube-search.lua.
+The original repository and author are credited in the Slice manifest, source
+header, package README, application Slices screen and project documentation.
+
+CedarApple adaptations connect Lua search, paging and selection to the native
+Slint grid and CedarApple's playback queue. See
+assets/mpv/slices/youtube-search/README.md for the changes and original checksum.

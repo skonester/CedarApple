@@ -500,6 +500,18 @@ impl Ctx {
                 mpv_event_id_MPV_EVENT_NONE => break,
                 mpv_event_id_MPV_EVENT_FILE_LOADED => self.on_file_loaded(),
                 mpv_event_id_MPV_EVENT_TRACKS_CHANGED => self.update_tracks(),
+                mpv_event_id_MPV_EVENT_CLIENT_MESSAGE if !ev.data.is_null() => {
+                    let message = unsafe { &*(ev.data as *const mpv_event_client_message) };
+                    if message.num_args == 4 && !message.args.is_null() {
+                        let args = unsafe { std::slice::from_raw_parts(message.args, 4) };
+                        if args.iter().all(|p| !p.is_null()) {
+                            let args: Vec<_> = args.iter().map(|p| unsafe { std::ffi::CStr::from_ptr(*p) }.to_string_lossy()).collect();
+                            if args[0] == "cedarapple-slice" {
+                                crate::slices::message(&args[1], &args[2], &args[3]);
+                            }
+                        }
+                    }
+                }
                 mpv_event_id_MPV_EVENT_COMMAND_REPLY => {
                     let reply = ev.reply_userdata;
                     self.scrub.borrow_mut().on_reply(&self.mpv, reply);
@@ -1073,11 +1085,23 @@ fn load_item(mpv: &MpvHandle, item: &QueueItem, mode: &str) {
 }
 
 pub fn play_lumtub(url: &str, id: &str, title: &str, user_agent: &str) {
-    ctx().load_queue(vec![QueueItem {
+    play_youtube(url, id, title, user_agent, false);
+}
+
+pub fn play_youtube(url: &str, id: &str, title: &str, user_agent: &str, append: bool) {
+    let c = ctx();
+    let item = QueueItem {
         url: url.into(), name: title.into(), id: format!("youtube:{id}"),
         user_agent: Some(user_agent.into()), torrent: None,
         torrent_path: String::new(), provider: None,
-    }], 0);
+    };
+    if append && !c.queue.borrow().is_empty() && !c.mpv.get_flag("idle-active") {
+        load_item(&c.mpv, &item, "append");
+        c.queue.borrow_mut().push(item);
+        c.sync_queue_model();
+    } else {
+        c.load_queue(vec![item], 0);
+    }
 }
 
 fn local_item(path: &str) -> QueueItem {
